@@ -1,0 +1,7 @@
+data/
+node_modules/
+bin/
+*.wav
+.secrets
+web/dist/*
+!web/dist/.gitkeep

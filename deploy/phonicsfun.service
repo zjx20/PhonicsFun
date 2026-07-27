@@ -1,0 +1,23 @@
+# systemd 单元（适用于跑标准 Linux 的软路由/小主机）
+#
+# 安装：
+#   cp phonicsfun-linux-<arch> /opt/phonicsfun/phonicsfun
+#   cp deploy/phonicsfun.service /etc/systemd/system/
+#   echo 'GEMINI_API_KEY=你的key' > /opt/phonicsfun/env   && chmod 600 /opt/phonicsfun/env
+#   systemctl enable --now phonicsfun
+
+[Unit]
+Description=PhonicsFun phonics learning app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/phonicsfun/phonicsfun
+WorkingDirectory=/opt/phonicsfun
+EnvironmentFile=/opt/phonicsfun/env
+Environment=DATA_DIR=/opt/phonicsfun/data
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
