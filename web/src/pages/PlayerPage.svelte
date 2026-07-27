@@ -109,9 +109,27 @@
     window.addEventListener('click', swallow, true);
     setTimeout(() => window.removeEventListener('click', swallow, true), 250);
   }
+
+  // 键盘左右方向键翻卡（桌面场景，与两侧按钮配套）
+  function onKeyDown(e) {
+    if (words.length === 0) return;
+    if (e.target.closest?.('input, textarea, select')) return;
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      prevCard();
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      nextCard();
+    }
+  }
 </script>
 
-<svelte:window onpointermove={onPointerMove} onpointerup={onPointerUp} onpointercancel={onPointerUp} />
+<svelte:window
+  onpointermove={onPointerMove}
+  onpointerup={onPointerUp}
+  onpointercancel={onPointerUp}
+  onkeydown={onKeyDown}
+/>
 
 <header class="page-header with-back">
   <a class="back-btn" href="#/">‹ 返回</a>
@@ -165,6 +183,11 @@
         </div>
       {/key}
     </div>
+
+    <!-- 宽屏：两侧固定位置按钮（垂直居中于视口，不随卡片高度浮动，鼠标不用挪）；
+         窄屏：隐藏，保留下方按钮行 + 滑动手势 -->
+    <button class="side-nav side-prev" aria-label="上一个" onclick={prevCard}>‹</button>
+    <button class="side-nav side-next" aria-label="下一个" onclick={nextCard}>›</button>
 
     <div class="nav-row">
       <button class="btn nav-btn" onclick={prevCard}>‹ 上一个</button>
@@ -227,6 +250,50 @@
   }
   .nav-btn:active {
     background: var(--primary-soft);
+  }
+  .side-nav {
+    display: none;
+  }
+  /* 页面列 560px + 两侧按钮各 56px + 间距，740px 起两侧放得下 */
+  @media (min-width: 740px) {
+    .nav-row {
+      display: none;
+    }
+    .side-nav {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: fixed; /* 相对视口垂直居中：卡片高矮变化不影响按钮位置 */
+      top: 50%;
+      transform: translateY(-50%);
+      width: 56px;
+      height: 56px;
+      border: 2px solid var(--primary-soft-border);
+      border-radius: 50%;
+      background: var(--card);
+      color: var(--primary-dark);
+      font-family: inherit;
+      font-size: 30px;
+      line-height: 1;
+      padding-bottom: 4px; /* ‹ › 字形偏高，微调视觉居中 */
+      cursor: pointer;
+      z-index: 10;
+      transition:
+        background 0.12s ease,
+        transform 0.12s ease;
+    }
+    .side-prev {
+      left: calc(50% - 280px - 76px);
+    }
+    .side-next {
+      right: calc(50% - 280px - 76px);
+    }
+    .side-nav:hover {
+      background: var(--primary-soft);
+    }
+    .side-nav:active {
+      transform: translateY(-50%) scale(0.92);
+    }
   }
   .dots {
     display: flex;
