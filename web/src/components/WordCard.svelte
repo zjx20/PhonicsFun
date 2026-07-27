@@ -3,7 +3,7 @@
   import PlayButtons from './PlayButtons.svelte';
   import CardMenu from './CardMenu.svelte';
   import { wordAudioUrl } from '../lib/api.js';
-  import { playbackState } from '../lib/audio.js';
+  import { playback } from '../lib/playback.svelte.js';
 
   // card: card.json v2（syllables/senses/examples）；word: 组详情里的状态项
   // {word,slug,text,audio,error?}；regenerating: 在途重新生成任务（null 表示没有）；
@@ -34,35 +34,21 @@
   const blendUrl = $derived(wordAudioUrl(word.slug, 'blend', card.generated_at));
   const wordUrl = $derived(wordAudioUrl(word.slug, 'word', card.generated_at));
 
-  // —— 卡拉OK高亮 ——
-  // PlayButtons 整段播放 blend.wav 时，用 rAF 轮询播放位置（timeupdate 事件太粗），
-  // 命中当前 cue：chunk/syllable cue 传给 ChunkRow 高亮，tail cue 高亮顶部大字区。
-  // 播放结束/暂停/切到整词时 effect 清理，activeCue 归 null。
-  let playing = $state(null); // bind 自 PlayButtons：'blend' | 'word' | null
-  let activeCue = $state(null);
-
-  $effect(() => {
-    const cueList = cues?.cues;
-    if (playing !== 'blend' || !cueList?.length) {
-      activeCue = null;
-      return;
+  // —— 高亮（纯派生，无本地播放状态）——
+  // 整段播放 blend.wav 时按播放进度命中 cue（playback.time 由播放层 rAF 驱动）；
+  // 点读时直接高亮被点的那段。chunk/syllable cue 传给 ChunkRow，tail cue
+  // 高亮顶部大字区。播放结束后 playback 复位，这里自然归 null。
+  const activeCue = $derived.by(() => {
+    const list = cues?.cues;
+    if (!list?.length) return null;
+    const seg = playback.segment;
+    if (seg && seg.url === blendUrl) {
+      return list.find((c) => c.start_ms === seg.startMs && c.end_ms === seg.endMs) ?? null;
     }
-    let raf = 0;
-    const tick = () => {
-      const ps = playbackState();
-      if (ps && ps.url === blendUrl && !ps.paused) {
-        const ms = ps.time * 1000;
-        activeCue = cueList.find((c) => ms >= c.start_ms && ms < c.end_ms) ?? null;
-      } else {
-        activeCue = null;
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(raf);
-      activeCue = null;
-    };
+    if (playback.url === blendUrl) {
+      return list.find((c) => playback.time >= c.start_ms && playback.time < c.end_ms) ?? null;
+    }
+    return null;
   });
 </script>
 
@@ -143,7 +129,7 @@
     </div>
   {/if}
 
-  <PlayButtons {blendUrl} {wordUrl} disabled={!audioReady} bind:playing />
+  <PlayButtons {blendUrl} {wordUrl} disabled={!audioReady} />
 </div>
 
 <CardMenu

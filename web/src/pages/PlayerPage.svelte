@@ -8,7 +8,7 @@
     prevCard,
     regenerate,
   } from '../lib/player.svelte.js';
-  import { stopAudio, preloadAudio } from '../lib/audio.js';
+  import { stopPlayback, preload } from '../lib/playback.svelte.js';
   import { wordAudioUrl } from '../lib/api.js';
   import WordCard from '../components/WordCard.svelte';
   import CardPlaceholder from '../components/CardPlaceholder.svelte';
@@ -19,7 +19,7 @@
     openGroup(id);
     return () => {
       closeGroup();
-      stopAudio();
+      stopPlayback();
     };
   });
 
@@ -36,8 +36,8 @@
       const w = words[(playerState.index + offset) % len];
       const card = playerState.cards[w.slug];
       if (card && w.audio === 'done') {
-        preloadAudio(wordAudioUrl(w.slug, 'word', card.generated_at));
-        preloadAudio(wordAudioUrl(w.slug, 'blend', card.generated_at));
+        preload(wordAudioUrl(w.slug, 'word', card.generated_at));
+        preload(wordAudioUrl(w.slug, 'blend', card.generated_at));
       }
     }
   });
@@ -45,7 +45,7 @@
   // 换卡时停止当前播放
   $effect(() => {
     void playerState.index;
-    stopAudio();
+    stopPlayback();
   });
 
   // —— 左右滑动（pointer 事件，50px 阈值）——

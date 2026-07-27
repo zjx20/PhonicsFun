@@ -49,5 +49,7 @@ src/lib/api.js                 fetch 封装（后端 API 契约的唯一入口�
 src/lib/groups.svelte.js       组列表状态 + 轮询控制
 src/lib/player.svelte.js       播放页状态：当前组/卡索引、卡片缓存、重新生成跟踪
 src/lib/toast.svelte.js        全局 Toast
-src/lib/audio.js               原生 Audio 播放 + 相邻卡预加载
+src/lib/playback.svelte.js     声明式播放层：全局唯一播放状态（$state）+
+                               整段播放/点读/预加载；组件只做派生渲染，
+                               状态迁移全部带会话代数守卫
 ```

@@ -9,8 +9,7 @@
   //
   // 卡拉OK：activeCue 由 WordCard 在整段播放 blend.wav 时轮询命中传入——
   // chunk cue 高亮对应格子，syllable cue 高亮整个音节组（tail 由 WordCard 自己处理）。
-  import { playSegment } from '../lib/audio.js';
-  import { toastError } from '../lib/toast.svelte.js';
+  import { playSegment } from '../lib/playback.svelte.js';
 
   let { syllables, blendUrl = '', cues = null, canPlay = false, activeCue = null } = $props();
 
@@ -43,9 +42,7 @@
 
   function play(cue) {
     if (!canPlay || !cue) return;
-    playSegment(blendUrl, cue.start_ms, cue.end_ms, {
-      onError: () => toastError('音频播放失败'),
-    });
+    playSegment(blendUrl, cue.start_ms, cue.end_ms);
   }
 
   const isChunkActive = (s, c) =>

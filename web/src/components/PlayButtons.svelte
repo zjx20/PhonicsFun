@@ -1,48 +1,37 @@
 <script>
-  import { playAudio, stopAudio } from '../lib/audio.js';
-  import { toastError } from '../lib/toast.svelte.js';
+  import { playback, playFull, stopPlayback } from '../lib/playback.svelte.js';
 
-  // playing 可绑定：'blend' | 'word' | null，
-  // WordCard 靠 bind:playing 得知 blend 整段播放中，驱动卡拉OK高亮的 rAF 轮询。
-  let { blendUrl, wordUrl, disabled = false, playing = $bindable(null) } = $props();
+  let { blendUrl, wordUrl, disabled = false } = $props();
 
-  let stopHandle = null;
+  // 按钮状态纯派生自全局播放状态——没有本地"播放中"标志，不存在卡死的可能
+  const blendPlaying = $derived(playback.url === blendUrl);
+  const wordPlaying = $derived(playback.url === wordUrl);
 
-  function toggle(kind) {
-    if (playing === kind) {
-      stopAudio(); // 触发 onEnd → playing 复位
-      return;
+  function toggle(url) {
+    if (playback.url === url) {
+      stopPlayback();
+    } else {
+      playFull(url);
     }
-    const url = kind === 'blend' ? blendUrl : wordUrl;
-    playing = kind;
-    stopHandle = playAudio(url, {
-      onEnd: () => {
-        if (playing === kind) playing = null;
-      },
-      onError: () => toastError('音频播放失败'),
-    });
   }
-
-  // 组件卸载（翻卡）时停掉自己发起的播放
-  $effect(() => () => stopHandle?.());
 </script>
 
 <div class="play-row">
   <button
     class="btn play-btn"
-    class:playing={playing === 'blend'}
+    class:playing={blendPlaying}
     {disabled}
-    onclick={() => toggle('blend')}
+    onclick={() => toggle(blendUrl)}
   >
-    {playing === 'blend' ? '◼ 停止' : '▶ 拼读'}
+    {blendPlaying ? '◼ 停止' : '▶ 拼读'}
   </button>
   <button
     class="btn play-btn"
-    class:playing={playing === 'word'}
+    class:playing={wordPlaying}
     {disabled}
-    onclick={() => toggle('word')}
+    onclick={() => toggle(wordUrl)}
   >
-    {playing === 'word' ? '◼ 停止' : '▶ 整词'}
+    {wordPlaying ? '◼ 停止' : '▶ 整词'}
   </button>
 </div>
 
