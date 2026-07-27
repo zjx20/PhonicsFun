@@ -2,9 +2,10 @@
   import { playAudio, stopAudio } from '../lib/audio.js';
   import { toastError } from '../lib/toast.svelte.js';
 
-  let { blendUrl, wordUrl, disabled = false } = $props();
+  // playing 可绑定：'blend' | 'word' | null，
+  // WordCard 靠 bind:playing 得知 blend 整段播放中，驱动卡拉OK高亮的 rAF 轮询。
+  let { blendUrl, wordUrl, disabled = false, playing = $bindable(null) } = $props();
 
-  let playing = $state(null); // 'blend' | 'word' | null
   let stopHandle = null;
 
   function toggle(kind) {

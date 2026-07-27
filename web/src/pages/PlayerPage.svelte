@@ -155,6 +155,7 @@
             <WordCard
               card={currentCard}
               word={current}
+              cues={playerState.cues[current.slug] ?? null}
               regenerating={playerState.regenerating[current.slug] ?? null}
               onregenerate={regenerate}
             />

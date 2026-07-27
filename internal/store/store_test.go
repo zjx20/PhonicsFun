@@ -24,45 +24,113 @@ func TestSlug(t *testing.T) {
 	}
 }
 
+// validCard 构造一张合法的 v2 卡（action = ac + tion），供各校验用例做局部破坏。
+func validCard() *Card {
+	return &Card{
+		Schema: CardSchemaVersion,
+		Word:   "action",
+		IPA:    "/ˈækʃən/",
+		Senses: []Sense{{POS: "n.", ZH: "行动", EN: "something you do"}},
+		Examples: []Example{
+			{EN: "Let's take action now.", ZH: "我们现在就行动吧。"},
+		},
+		Syllables: []Syllable{
+			{Text: "ac", Respell: "ak", Chunks: []Chunk{
+				{Grapheme: "a", Phoneme: "/æ/", Respell: "a", AnchorWord: "apple"},
+				{Grapheme: "c", Phoneme: "/k/", Respell: "k", AnchorWord: "kite"},
+			}},
+			{Text: "tion", Respell: "shun", Chunks: []Chunk{
+				{Grapheme: "tion", Phoneme: "/ʃən/", Respell: "shun", AnchorWord: "station"},
+			}},
+		},
+	}
+}
+
 func TestCardValidate(t *testing.T) {
-	good := &Card{
-		Word: "cake",
-		Chunks: []Chunk{
+	if err := validCard().Validate(); err != nil {
+		t.Fatalf("合法卡被拒: %v", err)
+	}
+
+	// 单音节 + magic-e 哑音 chunk
+	cake := &Card{
+		Schema: CardSchemaVersion, Word: "cake",
+		Senses:   []Sense{{POS: "n.", ZH: "蛋糕", EN: "a sweet food"}},
+		Examples: []Example{{EN: "I like cake.", ZH: "我喜欢蛋糕。"}},
+		Syllables: []Syllable{{Text: "cake", Respell: "kayk", Chunks: []Chunk{
 			{Grapheme: "c", Phoneme: "/k/", Respell: "k", AnchorWord: "kite"},
 			{Grapheme: "a", Phoneme: "/eɪ/", Respell: "ay", AnchorWord: "name"},
 			{Grapheme: "k", Phoneme: "/k/", Respell: "k", AnchorWord: "kite"},
 			{Grapheme: "e", Silent: true},
+		}}},
+	}
+	if err := cake.Validate(); err != nil {
+		t.Fatalf("合法单音节卡被拒: %v", err)
+	}
+
+	breakIt := func(name string, mutate func(*Card)) {
+		c := validCard()
+		mutate(c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s 未被检测出", name)
+		}
+	}
+	breakIt("音节拼接与单词不一致", func(c *Card) { c.Syllables[0].Text = "ax" })
+	breakIt("音节内 chunk 拼接不一致", func(c *Card) { c.Syllables[0].Chunks[1].Grapheme = "k" })
+	breakIt("音节缺 respell", func(c *Card) { c.Syllables[1].Respell = "" })
+	breakIt("空 syllables", func(c *Card) { c.Syllables = nil })
+	breakIt("音节没有 chunk", func(c *Card) { c.Syllables[1].Chunks = nil })
+	breakIt("非 silent chunk 缺 anchor_word", func(c *Card) { c.Syllables[0].Chunks[0].AnchorWord = "" })
+	breakIt("音节全 silent", func(c *Card) {
+		c.Syllables[1].Chunks[0].Silent = true
+		c.Syllables[1].Chunks[0].Respell = ""
+	})
+	breakIt("空 senses", func(c *Card) { c.Senses = nil })
+	breakIt("非法词性缩写", func(c *Card) { c.Senses[0].POS = "noun" })
+	breakIt("sense 缺中文", func(c *Card) { c.Senses[0].ZH = "" })
+	breakIt("空 examples", func(c *Card) { c.Examples = nil })
+	breakIt("example 缺英文", func(c *Card) { c.Examples[0].EN = "" })
+	// digraph 被拆开：sh 拆成 s|h
+	breakIt("digraph 被拆开", func(c *Card) {
+		c.Word = "shac"
+		c.Syllables[0].Text = "shac"
+		c.Syllables[0].Chunks = []Chunk{
+			{Grapheme: "s", Phoneme: "/s/", Respell: "s", AnchorWord: "sun"},
+			{Grapheme: "h", Phoneme: "/h/", Respell: "h", AnchorWord: "hat"},
+			{Grapheme: "a", Phoneme: "/æ/", Respell: "a", AnchorWord: "apple"},
+			{Grapheme: "c", Phoneme: "/k/", Respell: "k", AnchorWord: "kite"},
+		}
+	})
+	// blend 被合并成一个 chunk：pl
+	breakIt("blend 合并成一个 chunk", func(c *Card) {
+		c.Word = "plaction"
+		c.Syllables[0].Text = "plac"
+		c.Syllables[0].Chunks = []Chunk{
+			{Grapheme: "pl", Phoneme: "/pl/", Respell: "pl", AnchorWord: "play"},
+			{Grapheme: "a", Phoneme: "/æ/", Respell: "a", AnchorWord: "apple"},
+			{Grapheme: "c", Phoneme: "/k/", Respell: "k", AnchorWord: "kite"},
+		}
+	})
+
+	// listen 的 st 整体成 chunk（t 不发音）是合法的——st 故意不在黑名单
+	listen := &Card{
+		Schema: CardSchemaVersion, Word: "listen",
+		Senses:   []Sense{{POS: "v.", ZH: "听", EN: "to hear"}},
+		Examples: []Example{{EN: "Listen to me.", ZH: "听我说。"}},
+		Syllables: []Syllable{
+			{Text: "lis", Respell: "lis", Chunks: []Chunk{
+				{Grapheme: "l", Phoneme: "/l/", Respell: "l", AnchorWord: "leg"},
+				{Grapheme: "i", Phoneme: "/ɪ/", Respell: "ih", AnchorWord: "sit"},
+				{Grapheme: "s", Phoneme: "/s/", Respell: "s", AnchorWord: "sun"},
+			}},
+			{Text: "ten", Respell: "tun", Chunks: []Chunk{
+				{Grapheme: "t", Silent: true},
+				{Grapheme: "e", Phoneme: "/ə/", Respell: "uh", AnchorWord: "about"},
+				{Grapheme: "n", Phoneme: "/n/", Respell: "n", AnchorWord: "net"},
+			}},
 		},
 	}
-	if err := good.Validate(); err != nil {
-		t.Errorf("valid card rejected: %v", err)
-	}
-
-	bad := &Card{
-		Word: "cake",
-		Chunks: []Chunk{
-			{Grapheme: "c", Respell: "k", AnchorWord: "kite"},
-			{Grapheme: "ake", Respell: "ake", AnchorWord: "cake"},
-		},
-	}
-	if err := bad.Validate(); err != nil {
-		t.Errorf("joined graphemes match, should pass: %v", err)
-	}
-
-	mismatch := &Card{
-		Word:   "cake",
-		Chunks: []Chunk{{Grapheme: "ca", Respell: "ka", AnchorWord: "cat"}},
-	}
-	if err := mismatch.Validate(); err == nil {
-		t.Error("grapheme mismatch not detected")
-	}
-
-	missingRespell := &Card{
-		Word:   "at",
-		Chunks: []Chunk{{Grapheme: "a", Respell: "a", AnchorWord: "apple"}, {Grapheme: "t"}},
-	}
-	if err := missingRespell.Validate(); err == nil {
-		t.Error("missing respell on non-silent chunk not detected")
+	if err := listen.Validate(); err != nil {
+		t.Errorf("listen 卡应合法: %v", err)
 	}
 }
 
@@ -71,16 +139,9 @@ func TestCardRoundTripAndAtomicity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	card := &Card{
-		Word: "word", IPA: "/wɝːd/",
-		DefinitionZH: "单词", DefinitionEN: "a unit of language",
-		Chunks: []Chunk{
-			{Grapheme: "w", Phoneme: "/w/", Respell: "wuh", AnchorWord: "wet"},
-			{Grapheme: "or", Phoneme: "/ɝː/", Respell: "er", AnchorWord: "her"},
-			{Grapheme: "d", Phoneme: "/d/", Respell: "duh", AnchorWord: "dog"},
-		},
-		GeneratedAt: time.Now().UTC(), Model: "test",
-	}
+	card := validCard()
+	card.GeneratedAt = time.Now().UTC()
+	card.Model = "test"
 	slug := Slug(card.Word)
 	if s.HasCard(slug) {
 		t.Fatal("card should not exist yet")
@@ -95,7 +156,9 @@ func TestCardRoundTripAndAtomicity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Word != "word" || len(got.Chunks) != 3 || got.Chunks[1].Grapheme != "or" {
+	if got.Schema != CardSchemaVersion || got.Word != "action" ||
+		len(got.Syllables) != 2 || got.Syllables[1].Text != "tion" ||
+		len(got.Senses) != 1 || got.Senses[0].POS != "n." || len(got.Examples) != 1 {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 
@@ -107,18 +170,31 @@ func TestCardRoundTripAndAtomicity(t *testing.T) {
 		}
 	}
 
-	// 音频写入与删除
+	// 音频与 cues 写入、DeleteAudio 级联删除
 	if err := s.WriteAudio(slug, AudioWord, []byte("RIFFfake")); err != nil {
 		t.Fatal(err)
 	}
 	if !s.HasAudio(slug, AudioWord) || s.HasAudio(slug, AudioBlend) {
 		t.Error("audio presence wrong")
 	}
+	cues := &Cues{Version: 1, SampleRate: 24000, Cues: []Cue{
+		{Kind: "chunk", Syllable: 0, Chunk: 0, StartMS: 0, EndMS: 400},
+		{Kind: "tail", Syllable: -1, Chunk: -1, StartMS: 700, EndMS: 2000},
+	}}
+	if err := s.WriteCues(slug, cues); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.CuesPath(slug)); err != nil {
+		t.Fatal("cues 未落盘")
+	}
 	if err := s.DeleteAudio(slug); err != nil {
 		t.Fatal(err)
 	}
 	if s.HasAudio(slug, AudioWord) {
 		t.Error("audio still present after delete")
+	}
+	if _, err := os.Stat(s.CuesPath(slug)); !os.IsNotExist(err) {
+		t.Error("DeleteAudio 应连带删除 cues")
 	}
 }
 

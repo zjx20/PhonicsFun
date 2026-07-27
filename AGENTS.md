@@ -24,14 +24,20 @@ go run ./cmd/spike -text # AI 链路独立验证：真实生成一张卡并发�
 
 ```
 cmd/server/          入口：config → store → llm → pipeline → httpapi，优雅退出
-cmd/spike/           Live/文本链路独立验证程序（复用 llm 包同一套代码路径）
+cmd/spike/           Live/文本链路独立验证程序（复用 llm/pipeline 同一套代码路径，
+                     含 blend 分割重组；-text 走真实文本生成）
 internal/config/     env 解析（见下方环境变量表）
-internal/store/      文件存储层：Slug 归一化、原子写、Card/Group 类型与 CRUD
+internal/store/      文件存储层：Slug 归一化、原子写、Card(v2)/Group/Cues 类型与 CRUD
 internal/llm/        Gemini 封装：GenerateCard / ExtractWords(FromImage) / Live 会话
-                     内嵌 CMUdict（cmudict.dict.gz，二分查找，注入 prompt 作发音参照）
+                     内嵌三份参照数据注入 prompt（均为 gzip + 行偏移二分模式）：
+                     CMUdict（发音+音节数）、mhyph.tsv.gz（Moby 音节切分，见
+                     MOBY-LICENSE）、posdict.tsv.gz（ECDICT 词性，见 ECDICT-LICENSE）
 internal/pipeline/   生成流水线：text/audio 两条串行 worker + 优先级队列 + 退避重试
-internal/wav/        PCM → WAV（44 字节头，无外部依赖）
-internal/httpapi/    REST API + 内嵌 SPA 服务（含 Range 音频）
+                     BlendAudio：blend 连续朗读 → 静音分割 → 重组 + cues 构造
+internal/wav/        PCM → WAV（44 字节头）+ 静音处理（SplitBySilence/TrimSilence/Silence）
+internal/httpapi/    REST API + 内嵌 SPA 服务（含 Range 音频、cues JSON）
+tools/mkposdict/     一次性数据生成工具（产物 .gz 已入库，工具留作可复现记录）
+tools/mkhyphdict/
 web/                 Svelte 5 + Vite 前端；约定见 web/README.md
 web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也能编译
 ```
@@ -40,14 +46,15 @@ web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也�
 
 ## 核心不变量（改代码前必读）
 
-1. **产物文件存在性即完成态**。`data/words/<slug>/card.json` 在 = 文本完成，`word.wav`+`blend.wav` 在 = 音频完成。没有状态文件；pending/running/failed 只存在于 pipeline 内存（进程重启即丢，`Pipeline.Recover()` 扫描补缺口）。任何引入"第二事实源"的改动都会破坏崩溃自洽性。
+1. **产物文件存在性即完成态**。`data/words/<slug>/card.json` 在 = 文本完成，`word.wav`+`blend.wav` 在 = 音频完成。`blend.cues.json`（时间标注）不参与完成态判定，但生成顺序保证"blend.wav 在则 cues 必在"（先写 cues 后写 wav）。没有状态文件；pending/running/failed 只存在于 pipeline 内存（进程重启即丢，`Pipeline.Recover()` 扫描补缺口）。任何引入"第二事实源"的改动都会破坏崩溃自洽性。
 2. **所有落盘走原子写**（`store.writeFileAtomic`：temp + fsync + rename）。磁盘上不允许出现半成品文件。
-3. **重新生成（force）= 先删产物再入队**（`Pipeline.Regenerate`），job 本身不带 force 标志，worker 只看文件是否存在。text 重生成会连带删音频（拼读脚本依赖新文本），这个级联不能去掉。
-4. **card.json 两条硬不变量**（`store.Card.Validate`，llm 生成时校验、前端渲染时复验）：chunks 的 grapheme 依序拼接精确等于小写 word（不发音字母单独成 chunk 标 `silent:true`）；非 silent chunk 必有 `respell` + `anchor_word`。
-5. **音频 prompt 永不含裸 IPA**（Live 模型会读错）。拼读脚本由 `llm.BuildBlendScript` 从 chunks 的 respell+anchor_word 机械拼装，改拼读发音行为应改 respell/anchor_word 的生成质量，而不是往脚本里塞 IPA。
-6. **Live 会话复用**：每会话最多 8 词、13 分钟，收到 GoAway 或出错即轮换（常量在 `internal/llm/live.go`）；音频会话官方上限约 15 分钟，轮换阈值必须留余量。单词重生成走全新小会话。
-7. **所有出站 Gemini 调用（含 Live 建会话）共享 `llm.Client` 里的一个 rate.Limiter**。免费层限额官方不再公布，按 15 RPM / 1000 RPD 保守假设（默认 12 RPM 留余量）；Live 会话内的轮次不计请求数。
-8. **slug**（`store.Slug`）：小写、仅 `[a-z0-9']`、`'`→`_`。同 slug 即同词，跨组共享缓存目录；URL 里的 slug 参数一律先过 `store.Slug` 再拼路径（防穿越）。
+3. **重新生成（force）= 先删产物再入队**（`Pipeline.Regenerate`），job 本身不带 force 标志，worker 只看文件是否存在。text 重生成会连带删音频（拼读脚本依赖新文本），这个级联不能去掉；`DeleteAudio` 连带删 cues。
+4. **card.json 是带版本的两级结构**（`schema: 2`，音节 → 音节内 chunk）。硬不变量（`store.Card.Validate`，llm 生成时校验、前端渲染时复验）：音节 text 依序拼接 == 小写 word；音节内 chunk 的 grapheme 依序拼接 == 音节 text（不发音字母单独成 chunk 标 `silent:true`）；非 silent chunk 必有 `respell` + `anchor_word`，音节必有 `respell`；senses/examples 非空且词性在标准缩写枚举内；digraph 不可拆开、blend 不可合并（机械黑白名单）。**改 schema 必须递增 `store.CardSchemaVersion`**——`Recover()` 发现旧版卡会自动删产物重建（升级即全量重生成，耗一轮配额）。
+5. **音频 prompt 永不含裸 IPA，也不含裸拼写的音节**（Live 模型会把 tion 读成 tee-on）。拼读条目由 `llm.BuildBlendLines` 机械拼装：chunk 行用 chunk.respell（spelling voice，不弱读），音节行/连读用 syllable.respell（真实读音，含 schwa）。改拼读发音应改 respell/anchor_word 的生成质量，而不是往脚本里塞 IPA。
+6. **blend 音频与时间标注由"分割重组"构造**（`pipeline.BlendAudio`）：主体轮一次连续朗读全部条目（模型条目间停顿≈1s 是静音分割的生命线，systemInstruction 与脚本里的停顿指令不能删），按已知条目数 `wav.SplitBySilence` 切段（段数不符 = 朗读失控，自动重试），修剪后按固定静音间隔重组；收尾轮再按"音节数+1"二次分割做紧凑化（音节段 `wav.Speedup` 快放 + 极短间隔 + 整词原速，分不开则退回整段修剪，不判失败）。**拼读节奏调 pipeline 的 gap/tailSyl* 常量，不要去调 prompt**；cues 毫秒即重组时的字节偏移，改重组逻辑必须同步保证 cues 精确。
+7. **Live 会话复用**：每会话最多 8 词、13 分钟，收到 GoAway 或出错即轮换（常量在 `internal/llm/live.go`）；音频会话官方上限约 15 分钟，轮换阈值必须留余量。单词重生成走全新小会话。每词 3 轮：blend 主体、blend 收尾、整词。
+8. **所有出站 Gemini 调用（含 Live 建会话）共享 `llm.Client` 里的一个 rate.Limiter**。免费层限额官方不再公布，按 15 RPM / 1000 RPD 保守假设（默认 12 RPM 留余量）；Live 会话内的轮次不计请求数。
+9. **slug**（`store.Slug`）：小写、仅 `[a-z0-9']`、`'`→`_`。同 slug 即同词，跨组共享缓存目录；URL 里的 slug 参数一律先过 `store.Slug` 再拼路径（防穿越）。
 
 ## HTTP API 契约
 
@@ -60,8 +67,9 @@ web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也�
 | `GET /api/groups` | `[{id,name,createdAt,total,ready}]` |
 | `GET /api/groups/{id}` | `{..., words:[{word,slug,text,audio,error?}]}`，状态值 `pending/running/done/failed`，前端轮询 |
 | `DELETE /api/groups/{id}` | `?purge=1` 连带删除无其他组引用的词目录 |
-| `GET /api/words/{slug}` | card.json |
+| `GET /api/words/{slug}` | card.json（v2：schema/senses/examples/syllables） |
 | `GET /api/words/{slug}/audio/{word\|blend}.wav` | 音频，支持 Range（iOS Safari 必需） |
+| `GET /api/words/{slug}/audio/blend.cues.json` | blend 时间标注（点读/高亮）；404 = 无 cues，前端降级 |
 | `POST /api/words/{slug}/regenerate` | `{target:"text"\|"audio"\|"both"}` → 202；生成中返回 409 |
 
 ## 环境与已知坑

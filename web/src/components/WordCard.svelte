@@ -3,21 +3,67 @@
   import PlayButtons from './PlayButtons.svelte';
   import CardMenu from './CardMenu.svelte';
   import { wordAudioUrl } from '../lib/api.js';
+  import { playbackState } from '../lib/audio.js';
 
-  // card: card.json；word: 组详情里的状态项 {word,slug,text,audio,error?}；
-  // regenerating: player 状态里的在途重新生成任务（null 表示没有）。
-  let { card, word, regenerating = null, onregenerate } = $props();
+  // card: card.json v2（syllables/senses/examples）；word: 组详情里的状态项
+  // {word,slug,text,audio,error?}；regenerating: 在途重新生成任务（null 表示没有）；
+  // cues: blend.wav 的时间标注（null = 后端无 cues，点读/高亮降级，其余照常）。
+  let { card, word, cues = null, regenerating = null, onregenerate } = $props();
 
   let menuOpen = $state(false);
 
-  const chunks = $derived(card.chunks ?? []);
-  // 数据校验：chunks[].grapheme 依序拼接（转小写）必须精确等于 word
-  const spellingOk = $derived(
-    chunks.map((c) => c.grapheme).join('').toLowerCase() === (card.word ?? '').toLowerCase()
-  );
+  const syllables = $derived(card.syllables ?? []);
+  // 每个音节的跨音节起始 chunk 序号：大字区与 ChunkRow 用同一套连续编号取色
+  const offsets = $derived.by(() => {
+    const out = [];
+    let n = 0;
+    for (const syl of syllables) {
+      out.push(n);
+      n += syl.chunks?.length ?? 0;
+    }
+    return out;
+  });
+  // v2 校验：syllables[].text 依序拼接 === word 小写，
+  // 且每个音节内 chunks[].grapheme 拼接 === 音节 text
+  const spellingOk = $derived.by(() => {
+    if (syllables.length === 0) return false;
+    if (syllables.map((s) => s.text).join('') !== (card.word ?? '').toLowerCase()) return false;
+    return syllables.every((s) => (s.chunks ?? []).map((c) => c.grapheme).join('') === s.text);
+  });
   const audioReady = $derived(word.audio === 'done' && !regenerating);
   const blendUrl = $derived(wordAudioUrl(word.slug, 'blend', card.generated_at));
   const wordUrl = $derived(wordAudioUrl(word.slug, 'word', card.generated_at));
+
+  // —— 卡拉OK高亮 ——
+  // PlayButtons 整段播放 blend.wav 时，用 rAF 轮询播放位置（timeupdate 事件太粗），
+  // 命中当前 cue：chunk/syllable cue 传给 ChunkRow 高亮，tail cue 高亮顶部大字区。
+  // 播放结束/暂停/切到整词时 effect 清理，activeCue 归 null。
+  let playing = $state(null); // bind 自 PlayButtons：'blend' | 'word' | null
+  let activeCue = $state(null);
+
+  $effect(() => {
+    const cueList = cues?.cues;
+    if (playing !== 'blend' || !cueList?.length) {
+      activeCue = null;
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      const ps = playbackState();
+      if (ps && ps.url === blendUrl && !ps.paused) {
+        const ms = ps.time * 1000;
+        activeCue = cueList.find((c) => ms >= c.start_ms && ms < c.end_ms) ?? null;
+      } else {
+        activeCue = null;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      activeCue = null;
+    };
+  });
 </script>
 
 <div class="word-card">
@@ -36,12 +82,19 @@
 
   <button class="icon-btn card-menu-btn" aria-label="更多操作" onclick={() => (menuOpen = true)}>⋮</button>
 
-  <div class="word-big">
+  <div class="word-big" class:tail-active={activeCue?.kind === 'tail'}>
     {#if spellingOk}
-      {#each chunks as chunk, i}
-        <span class="word-chunk" class:silent-chunk={chunk.silent} style="color: var(--c{i % 6})">
-          {chunk.grapheme}
-        </span>
+      {#each syllables as syl, s}
+        {#if s > 0}<span class="syl-sep">·</span>{/if}
+        {#each syl.chunks ?? [] as chunk, c}
+          <span
+            class="word-chunk"
+            class:silent-chunk={chunk.silent}
+            style="color: var(--c{(offsets[s] + c) % 6})"
+          >
+            {chunk.grapheme}
+          </span>
+        {/each}
       {/each}
     {:else}
       <span class="word-plain">{card.word}</span>
@@ -52,16 +105,34 @@
     <div class="ipa">{card.ipa}</div>
   {/if}
 
-  <ChunkRow {chunks} />
+  <ChunkRow {syllables} {blendUrl} {cues} canPlay={audioReady && !!cues} {activeCue} />
 
-  <div class="defs">
-    {#if card.definition_zh}
-      <p class="def-zh">{card.definition_zh}</p>
-    {/if}
-    {#if card.definition_en}
-      <p class="def-en">{card.definition_en}</p>
-    {/if}
+  <div class="senses">
+    {#each card.senses ?? [] as sense}
+      <div class="sense">
+        <p class="sense-main">
+          {#if sense.pos}<span class="pos-badge">{sense.pos}</span>{/if}
+          <span class="sense-zh">{sense.zh}</span>
+        </p>
+        {#if sense.en}
+          <p class="sense-en">{sense.en}</p>
+        {/if}
+      </div>
+    {/each}
   </div>
+
+  {#if (card.examples ?? []).length > 0}
+    <div class="examples">
+      {#each card.examples as ex}
+        <div class="example">
+          <p class="example-en">{ex.en}</p>
+          {#if ex.zh}
+            <p class="example-zh">{ex.zh}</p>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
 
   {#if word.audio === 'failed' && !regenerating}
     <div class="audio-failed">
@@ -72,7 +143,7 @@
     </div>
   {/if}
 
-  <PlayButtons {blendUrl} {wordUrl} disabled={!audioReady} />
+  <PlayButtons {blendUrl} {wordUrl} disabled={!audioReady} bind:playing />
 </div>
 
 <CardMenu
@@ -127,6 +198,19 @@
     letter-spacing: 0.02em;
     line-height: 1.15;
     word-break: break-all;
+    border-radius: 18px;
+    transition:
+      background 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+  .word-big.tail-active {
+    background: var(--primary-soft);
+    box-shadow: 0 0 0 3px var(--primary);
+  }
+  .syl-sep {
+    color: var(--dot);
+    font-weight: 400;
+    margin: 0 0.04em;
   }
   .word-chunk.silent-chunk {
     color: var(--muted) !important;
@@ -141,18 +225,57 @@
     font-size: 17px;
     color: var(--muted);
   }
-  .defs {
+  .senses {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     margin-top: 16px;
     text-align: center;
   }
-  .def-zh {
-    font-size: 19px;
+  .sense-main {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .pos-badge {
+    flex-shrink: 0;
+    align-self: center;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--primary-soft);
+    color: var(--primary-dark);
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .sense-zh {
+    font-size: 18px;
     font-weight: 700;
     color: var(--text);
   }
-  .def-en {
-    margin-top: 4px;
-    font-size: 14px;
+  .sense-en {
+    margin-top: 2px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .examples {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1.5px solid var(--track);
+    text-align: left;
+  }
+  .example-en {
+    font-size: 15px;
+    color: var(--text);
+  }
+  .example-zh {
+    margin-top: 1px;
+    font-size: 13px;
     color: var(--muted);
   }
   .audio-failed {

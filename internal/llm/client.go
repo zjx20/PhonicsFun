@@ -26,6 +26,8 @@ type Client struct {
 	// 建立）共用这一个 limiter；Live 会话内的轮次不占请求配额，不计。
 	limiter *rate.Limiter
 	dict    *cmudict
+	hyph    *hyphdict
+	pos     *posdict
 }
 
 func New(ctx context.Context, cfg *config.Config) (*Client, error) {
@@ -40,6 +42,14 @@ func New(ctx context.Context, cfg *config.Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	hyph, err := loadHyphDict()
+	if err != nil {
+		return nil, err
+	}
+	pos, err := loadPOSDict()
+	if err != nil {
+		return nil, err
+	}
 	return &Client{
 		g:         g,
 		textModel: cfg.TextModel,
@@ -47,6 +57,8 @@ func New(ctx context.Context, cfg *config.Config) (*Client, error) {
 		voice:     cfg.Voice,
 		limiter:   rate.NewLimiter(rate.Limit(cfg.RPM)/60.0, 1),
 		dict:      dict,
+		hyph:      hyph,
+		pos:       pos,
 	}, nil
 }
 
@@ -64,26 +76,51 @@ func IsRetryable(err error) bool {
 	return err != nil && !errors.Is(err, context.Canceled)
 }
 
+var chunkSchema = &genai.Schema{
+	Type: genai.TypeObject,
+	Properties: map[string]*genai.Schema{
+		"grapheme":    {Type: genai.TypeString},
+		"phoneme":     {Type: genai.TypeString},
+		"respell":     {Type: genai.TypeString},
+		"anchor_word": {Type: genai.TypeString},
+		"silent":      {Type: genai.TypeBoolean},
+	},
+	Required: []string{"grapheme", "phoneme", "respell", "anchor_word", "silent"},
+}
+
 var cardSchema = &genai.Schema{
 	Type: genai.TypeObject,
 	Properties: map[string]*genai.Schema{
-		"word":          {Type: genai.TypeString},
-		"ipa":           {Type: genai.TypeString},
-		"definition_zh": {Type: genai.TypeString},
-		"definition_en": {Type: genai.TypeString},
-		"chunks": {Type: genai.TypeArray, Items: &genai.Schema{
+		"word": {Type: genai.TypeString},
+		"ipa":  {Type: genai.TypeString},
+		"senses": {Type: genai.TypeArray, Items: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
-				"grapheme":    {Type: genai.TypeString},
-				"phoneme":     {Type: genai.TypeString},
-				"respell":     {Type: genai.TypeString},
-				"anchor_word": {Type: genai.TypeString},
-				"silent":      {Type: genai.TypeBoolean},
+				"pos": {Type: genai.TypeString},
+				"zh":  {Type: genai.TypeString},
+				"en":  {Type: genai.TypeString},
 			},
-			Required: []string{"grapheme", "phoneme", "respell", "anchor_word", "silent"},
+			Required: []string{"pos", "zh", "en"},
+		}},
+		"examples": {Type: genai.TypeArray, Items: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"en": {Type: genai.TypeString},
+				"zh": {Type: genai.TypeString},
+			},
+			Required: []string{"en", "zh"},
+		}},
+		"syllables": {Type: genai.TypeArray, Items: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"text":    {Type: genai.TypeString},
+				"respell": {Type: genai.TypeString},
+				"chunks":  {Type: genai.TypeArray, Items: chunkSchema},
+			},
+			Required: []string{"text", "respell", "chunks"},
 		}},
 	},
-	Required: []string{"word", "ipa", "definition_zh", "definition_en", "chunks"},
+	Required: []string{"word", "ipa", "senses", "examples", "syllables"},
 }
 
 var wordsSchema = &genai.Schema{
@@ -94,13 +131,20 @@ var wordsSchema = &genai.Schema{
 	Required: []string{"words"},
 }
 
-// GenerateCard 生成一张单词卡的文本内容。CMUdict 命中时注入权威音素参照；
-// 生成结果做硬校验（grapheme 拼接 == word），失败带反馈重试一次。
+// GenerateCard 生成一张单词卡的文本内容。三路参照命中即注入 prompt
+// （CMUdict 音素 + 音节数、Moby 音节切分、ECDICT 词性）；生成结果做硬校验
+// （store.Card.Validate 全部不变量），失败带反馈重试一次。
 func (c *Client) GenerateCard(ctx context.Context, word string) (*store.Card, error) {
 	word = strings.ToLower(strings.TrimSpace(word))
 	arpabet := c.dict.Lookup(word)
+	refs := cardRefs{
+		ARPAbet:  arpabet,
+		SylCount: SyllableCount(arpabet),
+		Hyph:     c.hyph.Ref(word),
+		POS:      c.pos.Lookup(word),
+	}
 
-	card, err := c.generateCardOnce(ctx, word, buildCardPrompt(word, arpabet))
+	card, err := c.generateCardOnce(ctx, word, buildCardPrompt(word, refs))
 	if err == nil {
 		return card, nil
 	}
@@ -108,7 +152,7 @@ func (c *Client) GenerateCard(ctx context.Context, word string) (*store.Card, er
 	if !errors.As(err, &vErr) {
 		return nil, err // API 层错误交给上层退避重试
 	}
-	return c.generateCardOnce(ctx, word, buildCardRetryPrompt(word, arpabet, vErr.problem))
+	return c.generateCardOnce(ctx, word, buildCardRetryPrompt(word, refs, vErr.problem))
 }
 
 type validationError struct{ problem string }
@@ -132,6 +176,7 @@ func (c *Client) generateCardOnce(ctx context.Context, word, prompt string) (*st
 	}
 	// 不信任 LLM 回显的 word 字段，以我们的输入为准
 	card.Word = word
+	card.Schema = store.CardSchemaVersion
 	card.GeneratedAt = time.Now().UTC()
 	card.Model = c.textModel
 	if err := card.Validate(); err != nil {

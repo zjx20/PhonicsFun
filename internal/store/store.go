@@ -20,9 +20,14 @@ import (
 	"time"
 )
 
-// Chunk 是一个字素-音素教学单位。硬不变量（由 llm 层生成时校验，前端渲
-// 染时复验）：一张卡所有 chunk 的 Grapheme 依序拼接精确等于小写的 Word；
+// CardSchemaVersion 是 card.json 的当前结构版本。启动恢复扫描
+// （pipeline.Recover）发现旧版本卡片时会删除产物并重新生成。
+const CardSchemaVersion = 2
+
+// Chunk 是音节内的一个字素-音素教学单位。硬不变量见 Card.Validate：
+// 一个音节内所有 chunk 的 Grapheme 依序拼接精确等于该音节的 Text；
 // silent chunk（如 magic-e 的哑音 e）的 Phoneme/Respell 为空字符串。
+// Respell 是 spelling voice——每个元音读本音、不弱读，供逐块拼读。
 type Chunk struct {
 	Grapheme   string `json:"grapheme"`
 	Phoneme    string `json:"phoneme"`
@@ -31,40 +36,160 @@ type Chunk struct {
 	Silent     bool   `json:"silent"`
 }
 
-// Card 是单词卡的全部文本内容，前端渲染与拼读音频 prompt 的唯一数据源。
-type Card struct {
-	Word         string    `json:"word"`
-	IPA          string    `json:"ipa"`
-	DefinitionZH string    `json:"definition_zh"`
-	DefinitionEN string    `json:"definition_en"`
-	Chunks       []Chunk   `json:"chunks"`
-	GeneratedAt  time.Time `json:"generated_at"`
-	Model        string    `json:"model"`
+// Syllable 是拼读拆解的第一级：所有音节的 Text 依序拼接精确等于小写的
+// Word。Respell 是该音节的真实读音注音（含 schwa 弱读，如 tion→"shun"），
+// 音频脚本靠它朗读音节——Live 模型直接读 Text 会读错（tion→tee-on）。
+type Syllable struct {
+	Text    string  `json:"text"`
+	Respell string  `json:"respell"`
+	Chunks  []Chunk `json:"chunks"`
 }
 
-// JoinedGraphemes 返回 chunks 依序拼接出的字符串，用于与 Word 比对校验。
+// Sense 是一条按词性组织的释义。
+type Sense struct {
+	POS string `json:"pos"` // 标准缩写：n. v. adj. adv. pron. prep. conj. int. num. art.
+	ZH  string `json:"zh"`
+	EN  string `json:"en"`
+}
+
+// Example 是一条面向儿童的例句。
+type Example struct {
+	EN string `json:"en"`
+	ZH string `json:"zh"`
+}
+
+// Card 是单词卡的全部文本内容，前端渲染与拼读音频 prompt 的唯一数据源。
+type Card struct {
+	Schema      int        `json:"schema"`
+	Word        string     `json:"word"`
+	IPA         string     `json:"ipa"`
+	Senses      []Sense    `json:"senses"`
+	Examples    []Example  `json:"examples"`
+	Syllables   []Syllable `json:"syllables"`
+	GeneratedAt time.Time  `json:"generated_at"`
+	Model       string     `json:"model"`
+}
+
+// ValidPOS 是 Sense.POS 允许的标准缩写集合（生成 prompt 与校验共用）。
+var ValidPOS = map[string]bool{
+	"n.": true, "v.": true, "adj.": true, "adv.": true, "pron.": true,
+	"prep.": true, "conj.": true, "int.": true, "num.": true, "art.": true,
+}
+
+// neverSplitDigraphs：同一音节内被拆成相邻两个 chunk 即判违规的辅音
+// digraph/trigraph（长的在前，检查时先匹配 trigraph）。
+var neverSplitDigraphs = []string{"tch", "dge", "sh", "ch", "th", "ph", "wh", "ck", "ng"}
+
+// mergedBlends：辅音 blend 里每个音素都发音（Moats："blend 不是一个音"），
+// 合成一个 chunk 即判违规。故意不含 st/sc——它们可以合法地作为带哑音
+// 字母的整体 chunk 出现（listen 的 st 读 /s/、science 的 sc 读 /s/）。
+var mergedBlends = map[string]bool{
+	"bl": true, "cl": true, "fl": true, "gl": true, "pl": true, "sl": true,
+	"br": true, "cr": true, "dr": true, "fr": true, "gr": true, "pr": true, "tr": true,
+	"sk": true, "sm": true, "sn": true, "sp": true, "sw": true, "tw": true,
+	"str": true, "spr": true, "scr": true, "spl": true,
+}
+
+// JoinedGraphemes 返回全部音节的 chunk 字素依序拼接出的字符串。
 func (c *Card) JoinedGraphemes() string {
 	var b strings.Builder
-	for _, ch := range c.Chunks {
-		b.WriteString(ch.Grapheme)
+	for _, s := range c.Syllables {
+		for _, ch := range s.Chunks {
+			b.WriteString(ch.Grapheme)
+		}
 	}
 	return b.String()
 }
 
-// Validate 检查两条硬不变量。
+// joinedSyllables 返回音节 Text 依序拼接出的字符串。
+func (c *Card) joinedSyllables() string {
+	var b strings.Builder
+	for _, s := range c.Syllables {
+		b.WriteString(s.Text)
+	}
+	return b.String()
+}
+
+// Validate 检查 card.json 的全部硬不变量（llm 生成时校验，前端渲染时复验）。
 func (c *Card) Validate() error {
-	if got, want := c.JoinedGraphemes(), strings.ToLower(c.Word); got != want {
-		return fmt.Errorf("chunks 拼接 %q 与单词 %q 不一致", got, want)
+	if len(c.Syllables) == 0 {
+		return fmt.Errorf("syllables 为空")
 	}
-	if len(c.Chunks) == 0 {
-		return fmt.Errorf("chunks 为空")
+	if got, want := c.joinedSyllables(), strings.ToLower(c.Word); got != want {
+		return fmt.Errorf("音节拼接 %q 与单词 %q 不一致", got, want)
 	}
-	for i, ch := range c.Chunks {
-		if !ch.Silent && (ch.Respell == "" || ch.AnchorWord == "") {
-			return fmt.Errorf("chunk %d (%q) 缺 respell 或 anchor_word", i, ch.Grapheme)
+	for si, syl := range c.Syllables {
+		if len(syl.Chunks) == 0 {
+			return fmt.Errorf("音节 %d (%q) 没有 chunk", si, syl.Text)
+		}
+		if syl.Respell == "" {
+			return fmt.Errorf("音节 %d (%q) 缺 respell", si, syl.Text)
+		}
+		var joined strings.Builder
+		hasVoiced := false
+		for ci, ch := range syl.Chunks {
+			if ch.Grapheme == "" {
+				return fmt.Errorf("音节 %d (%q) 的 chunk %d 字素为空", si, syl.Text, ci)
+			}
+			joined.WriteString(ch.Grapheme)
+			if ch.Silent {
+				continue
+			}
+			hasVoiced = true
+			if ch.Respell == "" || ch.AnchorWord == "" {
+				return fmt.Errorf("音节 %d 的 chunk %q 缺 respell 或 anchor_word", si, ch.Grapheme)
+			}
+			if mergedBlends[strings.ToLower(ch.Grapheme)] {
+				return fmt.Errorf("chunk %q 是辅音 blend——blend 不是一个音，必须逐字母拆开", ch.Grapheme)
+			}
+		}
+		if joined.String() != syl.Text {
+			return fmt.Errorf("音节 %d 的 chunk 拼接 %q 与音节 %q 不一致", si, joined.String(), syl.Text)
+		}
+		if !hasVoiced {
+			return fmt.Errorf("音节 %d (%q) 全部 chunk 都是 silent", si, syl.Text)
+		}
+		if g := splitDigraph(syl.Chunks); g != "" {
+			return fmt.Errorf("音节 %d 内 digraph %q 被拆开——digraph 是一个音，必须作为整体 chunk", si, g)
+		}
+	}
+	if len(c.Senses) == 0 {
+		return fmt.Errorf("senses 为空")
+	}
+	for i, s := range c.Senses {
+		if !ValidPOS[s.POS] {
+			return fmt.Errorf("sense %d 词性 %q 不在标准缩写集合内", i, s.POS)
+		}
+		if s.ZH == "" {
+			return fmt.Errorf("sense %d (%s) 缺中文释义", i, s.POS)
+		}
+	}
+	if len(c.Examples) == 0 {
+		return fmt.Errorf("examples 为空")
+	}
+	for i, e := range c.Examples {
+		if e.EN == "" {
+			return fmt.Errorf("example %d 缺英文句", i)
 		}
 	}
 	return nil
+}
+
+// splitDigraph 检查同一音节内是否有相邻非 silent chunk 拼出 digraph；
+// 命中返回该 digraph，否则返回空串。
+func splitDigraph(chunks []Chunk) string {
+	for i := 0; i+1 < len(chunks); i++ {
+		if chunks[i].Silent || chunks[i+1].Silent {
+			continue
+		}
+		pair := strings.ToLower(chunks[i].Grapheme + chunks[i+1].Grapheme)
+		for _, d := range neverSplitDigraphs {
+			if pair == d {
+				return d
+			}
+		}
+	}
+	return ""
 }
 
 type Group struct {
@@ -79,8 +204,28 @@ type AudioKind string
 
 const (
 	AudioWord  AudioKind = "word"  // 整词发音
-	AudioBlend AudioKind = "blend" // 逐音素拼读
+	AudioBlend AudioKind = "blend" // 拼读（音节内逐块拼 → 合成音节 → 连读成词）
 )
+
+// Cue 是 blend.wav 内一个分段的时间标注（相对文件起点的毫秒）。
+// Kind: "chunk" | "syllable" | "tail"；Syllable/Chunk 是卡片里的下标
+// （Chunk 含 silent 在内的音节内下标），不适用时为 -1。
+type Cue struct {
+	Kind     string `json:"kind"`
+	Syllable int    `json:"syllable"`
+	Chunk    int    `json:"chunk"`
+	StartMS  int    `json:"start_ms"`
+	EndMS    int    `json:"end_ms"`
+}
+
+// Cues 是 blend.cues.json 的完整内容，与 blend.wav 成对生成。
+// 写入顺序约定：先写 cues 再写 wav——完成态判定只看 wav 的存在性
+// （见包注释的"产物存在性即状态"），因此 wav 在则 cues 必在。
+type Cues struct {
+	Version    int   `json:"version"`
+	SampleRate int   `json:"sample_rate"`
+	Cues       []Cue `json:"cues"`
+}
 
 type Store struct {
 	dir string
@@ -158,6 +303,20 @@ func (s *Store) WriteAudio(slug string, kind AudioKind, wavData []byte) error {
 	return writeFileAtomic(s.AudioPath(slug, kind), wavData)
 }
 
+// CuesPath 返回 blend 音频时间标注文件的路径。
+func (s *Store) CuesPath(slug string) string {
+	return filepath.Join(s.wordDir(slug), "blend.cues.json")
+}
+
+// WriteCues 落盘 blend 时间标注。必须先于对应的 blend.wav 写入。
+func (s *Store) WriteCues(slug string, c *Cues) error {
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(s.CuesPath(slug), data)
+}
+
 // DeleteCard/DeleteAudio 用于 force 重新生成前清除旧产物（不存在不报错）。
 func (s *Store) DeleteCard(slug string) error {
 	return removeIfExists(s.CardPath(slug))
@@ -167,7 +326,11 @@ func (s *Store) DeleteAudio(slug string) error {
 	if err := removeIfExists(s.AudioPath(slug, AudioWord)); err != nil {
 		return err
 	}
-	return removeIfExists(s.AudioPath(slug, AudioBlend))
+	if err := removeIfExists(s.AudioPath(slug, AudioBlend)); err != nil {
+		return err
+	}
+	// cues 与 blend.wav 同生共死
+	return removeIfExists(s.CuesPath(slug))
 }
 
 // --- 组 ---

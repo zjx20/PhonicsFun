@@ -1,6 +1,24 @@
-// 后端 API 的 thin fetch 封装。
+// 后端 API 的 thin fetch 封装（后端 API 契约的唯一入口）。
 // 所有请求走相对路径 /api/...：dev 由 Vite 代理到 Go 后端（见 vite.config.js），
 // 生产构建被 Go go:embed 后与 API 同源，因此无需任何绝对地址。
+//
+// 契约一览：
+//   POST   /api/extract                                {text} 或 multipart image → {words:[...]}
+//   POST   /api/groups                                 {name?, words:[]} → {id}
+//   GET    /api/groups                                 [{id,name,createdAt,total,ready}]
+//   GET    /api/groups/{id}                            {..., words:[{word,slug,text,audio,error?}]}
+//   DELETE /api/groups/{id}                            ?purge=1 连带删除无引用的词目录
+//   GET    /api/words/{slug}                           card.json v2：{schema:2, word, ipa,
+//                                                        senses:[{pos,zh,en}], examples:[{en,zh}],
+//                                                        syllables:[{text,respell,chunks:[{grapheme,
+//                                                        phoneme,respell,anchor_word,silent}]}],
+//                                                        generated_at, model}
+//   GET    /api/words/{slug}/audio/{word|blend}.wav    音频（支持 Range）
+//   GET    /api/words/{slug}/audio/blend.cues.json     blend.wav 的时间标注 {version, sample_rate,
+//                                                        cues:[{kind:"chunk"|"syllable"|"tail",
+//                                                        syllable, chunk, start_ms, end_ms}]}；
+//                                                        404 = 旧数据无 cues，前端须优雅降级
+//   POST   /api/words/{slug}/regenerate                {target:"text"|"audio"|"both"} → 202
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -75,9 +93,32 @@ export function deleteGroup(id) {
   return request(`/api/groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-/** GET /api/words/{slug} → card.json */
+/** GET /api/words/{slug} → card.json（v2，结构见文件顶部契约一览） */
 export function getCard(slug) {
   return request(`/api/words/${encodeURIComponent(slug)}`);
+}
+
+/**
+ * blend 音频时间标注地址。version 传 card.generated_at，与音频同一套防缓存机制。
+ */
+export function blendCuesUrl(slug, version) {
+  return `/api/words/${encodeURIComponent(slug)}/audio/blend.cues.json?v=${encodeURIComponent(version || '')}`;
+}
+
+/**
+ * GET /api/words/{slug}/audio/blend.cues.json → cues 对象。
+ * 404（旧数据没有 cues）返回 null 而不是抛错，调用方据此降级（无高亮、无点读）。
+ */
+export async function getBlendCues(slug, version) {
+  let res;
+  try {
+    res = await fetch(blendCuesUrl(slug, version));
+  } catch {
+    throw new Error('网络请求失败，请确认服务已启动');
+  }
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`请求失败（HTTP ${res.status}）`);
+  return res.json();
 }
 
 /** POST /api/words/{slug}/regenerate，target: "text" | "audio" | "both" → 202 */

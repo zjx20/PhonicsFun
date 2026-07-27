@@ -1,8 +1,9 @@
 # PhonicsFun 自然拼读
 
-教小孩英语自然拼读（phonics）的自托管 web 应用。家长录入单词（粘贴文本或拍照，AI 自动提取），AI 生成单词卡的全部内容——中英双语释义、IPA 音标、字素-音素拆解、整词发音音频、逐音素拼读音频——按"一次导入 = 一组"组织，学习时在组内循环翻卡。
+教小孩英语自然拼读（phonics）的自托管 web 应用。家长录入单词（粘贴文本或拍照，AI 自动提取），AI 生成单词卡的全部内容——按词性组织的中英释义、例句、IPA 音标、"音节 → 字素-音素块"两级拼读拆解、整词发音音频、拼读音频（音节内逐块拼 → 合成音节 → 连读成词）——按"一次导入 = 一组"组织，学习时在组内循环翻卡。
 
-- **AI 原生**：文本内容由 `gemini-3.5-flash-lite` 生成（结构化输出 + 内嵌 CMUdict 音素参照约束准确性）；音频由 `gemini-3.1-flash-live-preview` 的 Live API 生成（会话复用批量生成）。Google AI Studio 免费层即可运行。
+- **AI 原生**：文本内容由 `gemini-3.5-flash-lite` 生成（结构化输出，内嵌 CMUdict 发音/音节数、Moby 音节切分、ECDICT 词性三路参照约束准确性）；音频由 `gemini-3.1-flash-live-preview` 的 Live API 生成（会话复用批量生成）。Google AI Studio 免费层即可运行。
+- **点读与跟读高亮**：拼读音频带毫秒级时间标注（连续朗读经静音分割重组构造，非模型返回），播放时高亮当前音，点击任意拼读块/音节即可单独播放该段。
 - **缓存优先**：所有内容在导入时后台预生成并落盘，翻卡零延迟；模型抽风时可对单卡分别重新生成文本/音频。
 - **面向软路由部署**：Go 单二进制（CGO_ENABLED=0），纯文件存储（无数据库），前端（Svelte 5）构建产物嵌入二进制，运行时零外部资源依赖。
 
@@ -45,11 +46,14 @@ GEMINI_API_KEY=xxx ./bin/phonicsfun
 ```
 data/
 ├── words/<slug>/
-│   ├── card.json    # 释义/IPA/拆解（前端渲染与拼读音频脚本的唯一数据源）
-│   ├── word.wav     # 整词发音（慢速+常速各一遍）
-│   └── blend.wav    # 逐音素拼读，最后读整词
-└── groups/<id>.json # 单词组（一次导入一组，跨组同词共享缓存）
+│   ├── card.json         # 词性释义/例句/IPA/两级拆解（带 schema 版本号）
+│   ├── word.wav          # 整词发音（慢速+常速各一遍）
+│   ├── blend.wav         # 拼读：音节内逐块拼 → 合成音节 → 连读成整词
+│   └── blend.cues.json   # blend 各段起止毫秒（点读/高亮用，与 blend.wav 成对生成）
+└── groups/<id>.json      # 单词组（一次导入一组，跨组同词共享缓存）
 ```
+
+升级提示：card.json 带 schema 版本号，新版本启动时会自动检测旧版卡片并删除重建（全部文本+音频重新生成，消耗一轮 API 配额）。
 
 ## 开发
 
@@ -61,4 +65,4 @@ cd web && npm run dev          # 前端热更新（/api 代理到 :8080，先把
 
 生成一组 20 词的完整内容约需 8-10 分钟（受免费层 RPM 限制），导入后即可先学已就绪的词，前端会轮询进度。
 
-CMUdict（美音发音词典，BSD 许可，见 `internal/llm/CMUDICT-LICENSE`）以 gzip 形式嵌入二进制，为常见词的 IPA 转写提供权威参照。
+三份参照数据以 gzip 形式嵌入二进制，注入生成 prompt 约束模型输出：CMUdict（美音发音词典，见 `internal/llm/CMUDICT-LICENSE`）提供音素与音节数；Moby Hyphenator II（公有领域，见 `internal/llm/MOBY-LICENSE`）提供音节切分；ECDICT 裁剪子集（MIT，见 `internal/llm/ECDICT-LICENSE`）提供词性。后两份由 `tools/mkhyphdict`、`tools/mkposdict` 生成（产物已入库，工具留作可复现记录）。

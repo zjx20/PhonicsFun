@@ -2,6 +2,7 @@ data/
 node_modules/
 bin/
 *.wav
+spike-out/
 .secrets
 web/dist/*
 !web/dist/.gitkeep

@@ -41,36 +41,154 @@ func TestCMUDictLookup(t *testing.T) {
 	}
 }
 
-func TestBuildCardPrompt(t *testing.T) {
-	p := buildCardPrompt("word", "W ER1 D")
-	if !strings.Contains(p, "W ER1 D") || !strings.Contains(p, "现在处理单词：word") {
-		t.Errorf("prompt 缺少注入内容:\n%s", p)
+func TestSyllableCount(t *testing.T) {
+	cases := map[string]int{
+		"W ER1 D":                      1,
+		"R EH2 P L AH0 K EY1 SH AH0 N": 4,
+		"K AE1 T":                      1,
+		"":                             0,
 	}
-	p2 := buildCardPrompt("zzz", "")
-	if strings.Contains(p2, "权威发音参照") {
-		t.Error("无 ARPAbet 时不应有参照段落")
+	for in, want := range cases {
+		if got := SyllableCount(in); got != want {
+			t.Errorf("SyllableCount(%q) = %d, want %d", in, got, want)
+		}
 	}
 }
 
-func TestBuildBlendScript(t *testing.T) {
+func TestHyphDict(t *testing.T) {
+	h, err := loadHyphDict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"replication": "rep-li-ca-tion",
+		"tiger":       "ti-ger",
+		"about":       "a-bout",
+		"cat":         "cat", // 单音节词也收录，防过度拆分
+	}
+	for w, want := range cases {
+		if got := h.lookup(w); got != want {
+			t.Errorf("hyph.lookup(%q) = %q, want %q", w, got, want)
+		}
+	}
+	if got := h.lookup("zzzznotaword"); got != "" {
+		t.Errorf("miss 应返回空，got %q", got)
+	}
+	// 后缀剥离兜底：tigers 不在词表，剥 -s 命中 tiger
+	if got := h.Ref("tigers"); got != "ti-ger + -s" {
+		t.Errorf("Ref(tigers) = %q", got)
+	}
+	// 直查命中时原样返回
+	if got := h.Ref("replication"); got != "rep-li-ca-tion" {
+		t.Errorf("Ref(replication) = %q", got)
+	}
+}
+
+func TestPOSDict(t *testing.T) {
+	p, err := loadPOSDict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Lookup("light"); got != "n.,adj.,v.,adv." {
+		t.Errorf("pos.Lookup(light) = %q", got)
+	}
+	if got := p.Lookup("cat"); !strings.HasPrefix(got, "n.") {
+		t.Errorf("pos.Lookup(cat) = %q", got)
+	}
+	if got := p.Lookup("zzzznotaword"); got != "" {
+		t.Errorf("miss 应返回空，got %q", got)
+	}
+}
+
+func TestBuildCardPrompt(t *testing.T) {
+	refs := cardRefs{ARPAbet: "W ER1 D", SylCount: 1, Hyph: "word", POS: "n.,v."}
+	p := buildCardPrompt("word", refs)
+	for _, want := range []string{"W ER1 D", "音节切分参照", "词性参照", "n.,v.", "现在处理单词：word"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt 缺少 %q", want)
+		}
+	}
+	p2 := buildCardPrompt("zzz", cardRefs{})
+	if strings.Contains(p2, "权威参照") {
+		t.Error("无任何参照时不应有参照段落")
+	}
+}
+
+// multiCard 构造多音节测试卡（action = ac + tion，tion 是单 chunk 音节）。
+func multiCard() *store.Card {
+	return &store.Card{
+		Word: "action",
+		Syllables: []store.Syllable{
+			{Text: "ac", Respell: "ak", Chunks: []store.Chunk{
+				{Grapheme: "a", Respell: "a", AnchorWord: "apple"},
+				{Grapheme: "c", Respell: "k", AnchorWord: "cat"},
+			}},
+			{Text: "tion", Respell: "shun", Chunks: []store.Chunk{
+				{Grapheme: "tion", Respell: "shun", AnchorWord: "station"},
+			}},
+		},
+	}
+}
+
+func TestBuildBlendLinesMulti(t *testing.T) {
+	lines := BuildBlendLines(multiCard())
+	// 期望：a、c 两个 chunk 行 + ac 音节行 + tion 音节行（单 chunk 音节无
+	// chunk 行，但音节行要带上那个 chunk 的下标）+ tail
+	if len(lines) != 5 {
+		t.Fatalf("行数 = %d, want 5: %+v", len(lines), lines)
+	}
+	if lines[0].Kind != BlendChunk || lines[0].Syllable != 0 || lines[0].Chunk != 0 || lines[0].Say != "a" {
+		t.Errorf("行 0 错误: %+v", lines[0])
+	}
+	if lines[2].Kind != BlendSyllable || lines[2].Syllable != 0 || lines[2].Chunk != -1 || lines[2].Say != "ak" {
+		t.Errorf("行 2 错误: %+v", lines[2])
+	}
+	if lines[3].Kind != BlendSyllable || lines[3].Syllable != 1 || lines[3].Chunk != 0 || lines[3].Say != "shun" {
+		t.Errorf("行 3（单 chunk 音节）错误: %+v", lines[3])
+	}
+	if lines[4].Kind != BlendTail {
+		t.Errorf("末行应为 tail: %+v", lines[4])
+	}
+
+	body := BlendBodyScript(lines)
+	if !strings.Contains(body, `"a" (hint: the sound in "apple")`) ||
+		!strings.Contains(body, `"ak" (hint: one whole syllable)`) ||
+		!strings.Contains(body, `"shun" (hint: one whole syllable)`) {
+		t.Errorf("body 脚本错误:\n%s", body)
+	}
+	if strings.Contains(body, "tion") {
+		t.Error("body 脚本不应出现裸拼写 tion（模型会读错）")
+	}
+
+	tail := BlendTailScript(multiCard())
+	if !strings.Contains(tail, `"ak", "shun"`) || !strings.Contains(tail, `"action"`) {
+		t.Errorf("tail 脚本错误:\n%s", tail)
+	}
+}
+
+func TestBuildBlendLinesSingle(t *testing.T) {
 	card := &store.Card{
 		Word: "cake",
-		Chunks: []store.Chunk{
+		Syllables: []store.Syllable{{Text: "cake", Respell: "kayk", Chunks: []store.Chunk{
 			{Grapheme: "c", Respell: "k", AnchorWord: "kite"},
 			{Grapheme: "a", Respell: "ay", AnchorWord: "name"},
 			{Grapheme: "k", Respell: "k", AnchorWord: "kite"},
 			{Grapheme: "e", Silent: true},
-		},
+		}}},
 	}
-	s := BuildBlendScript(card)
-	if !strings.Contains(s, `1. "k" (hint: the sound in "kite")`) ||
-		!strings.Contains(s, `2. "ay" (hint: the sound in "name")`) ||
-		!strings.Contains(s, `3. "k"`) ||
-		!strings.Contains(s, `the whole word: "cake"`) {
-		t.Errorf("blend script 错误:\n%s", s)
+	lines := BuildBlendLines(card)
+	// 单音节：3 个 chunk 行（silent 跳过）+ tail，不出音节行
+	if len(lines) != 4 {
+		t.Fatalf("行数 = %d, want 4: %+v", len(lines), lines)
 	}
-	if strings.Contains(s, "4.") {
-		t.Error("silent chunk 不应出现在脚本里")
+	for _, ln := range lines[:3] {
+		if ln.Kind != BlendChunk {
+			t.Errorf("单音节词不应有音节行: %+v", ln)
+		}
+	}
+	tail := BlendTailScript(card)
+	if !strings.Contains(tail, `"cake"`) || strings.Contains(tail, "syllable") {
+		t.Errorf("单音节 tail 脚本错误:\n%s", tail)
 	}
 }
 

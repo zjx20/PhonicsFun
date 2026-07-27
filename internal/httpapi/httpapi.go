@@ -191,6 +191,16 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 		kind = store.AudioWord
 	case "blend.wav":
 		kind = store.AudioBlend
+	case "blend.cues.json":
+		// blend 的时间标注，与 blend.wav 成对生成（先 cues 后 wav 落盘）；
+		// 旧数据可能没有，前端拿 404 即降级（无高亮/点读）
+		if slug == "" {
+			httpError(w, http.StatusNotFound, "未知单词")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		http.ServeFile(w, r, s.store.CuesPath(slug))
+		return
 	default:
 		httpError(w, http.StatusNotFound, "未知音频")
 		return

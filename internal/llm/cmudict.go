@@ -62,6 +62,21 @@ func lineKey(line []byte) []byte {
 	return line
 }
 
+// SyllableCount 数 ARPAbet 音素串里带重音数字（0/1/2）的元音音素个数，
+// 即该词读音的音节数；空串返回 0。注意口语吞音词（chocolate/every）的
+// 拼写音节数可以合理地多于读音音节数，因此这个数只作 prompt 强参照，
+// 不做 Go 侧硬校验。
+func SyllableCount(arpabet string) int {
+	n := 0
+	for _, ph := range strings.Fields(arpabet) {
+		last := ph[len(ph)-1]
+		if last >= '0' && last <= '2' {
+			n++
+		}
+	}
+	return n
+}
+
 // Lookup 返回单词的 ARPAbet 音素串（如 "W ER1 D"），未收录返回 ""。
 // 只取主发音；"word(2)" 这类变体行排在主条目之后，天然被跳过。
 func (d *cmudict) Lookup(word string) string {
