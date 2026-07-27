@@ -191,7 +191,12 @@
     z-index: 5;
   }
   .word-big {
-    margin-top: 8px;
+    /* 宽度随单词收缩：tail 高亮的胶囊框紧贴内容，不横跨整卡蹭到右上角 ⋮ 按钮；
+       max-width 再给两侧留出按钮的空位 */
+    width: fit-content;
+    max-width: calc(100% - 88px);
+    margin: 8px auto 0;
+    padding: 2px 16px;
     text-align: center;
     font-size: clamp(44px, 14vw, 68px);
     font-weight: 800;
