@@ -1,0 +1,15 @@
+Moby Hyphenator II — provenance and license
+============================================
+
+mhyph.tsv.gz is derived from the Moby Hyphenator II word list (mhyph.txt,
+187,175 entries) by Grady Ward, part of the Moby Project. It was cleaned and
+re-encoded by tools/mkhyphdict in this repository (MacRoman -> ASCII, 0xA5
+syllable separators -> '-', phrases / duplicates / corrupt lines dropped).
+
+The Moby lexicon is in the PUBLIC DOMAIN. Grady Ward placed the Moby Project
+materials in the public domain; Project Gutenberg records the grant as
+"Public Domain material by grant from the author, January, 2001."
+
+Source: Project Gutenberg eBook #3204
+        https://www.gutenberg.org/ebooks/3204
+        (data file: https://www.gutenberg.org/files/3204/files/mhyph.txt)
