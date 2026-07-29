@@ -1,22 +1,25 @@
 <script>
-  import { fly } from 'svelte/transition';
+  import { untrack } from 'svelte';
+  import { cubicOut } from 'svelte/easing';
   import {
     playerState,
+    prefs,
+    toggleAutoPlay,
     openGroup,
     closeGroup,
     nextCard,
     prevCard,
     regenerate,
   } from '../lib/player.svelte.js';
-  import { stopPlayback, preload } from '../lib/playback.svelte.js';
+  import { playback, stopPlayback, playFull, preload } from '../lib/playback.svelte.js';
   import { wordAudioUrl } from '../lib/api.js';
   import WordCard from '../components/WordCard.svelte';
   import CardPlaceholder from '../components/CardPlaceholder.svelte';
 
-  let { id } = $props();
+  let { id, word = '' } = $props();
 
   $effect(() => {
-    openGroup(id);
+    openGroup(id, word);
     return () => {
       closeGroup();
       stopPlayback();
@@ -41,11 +44,59 @@
     }
   });
 
-  // 换卡时停止当前播放
+  // 自动播放在翻页后等这么久再开口：让 280ms 翻页动画先落定，卡片
+  // 站稳了再读，节奏不赶。
+  const AUTO_PLAY_DELAY_MS = 500;
+
+  // 换卡时停止当前播放；开着「自动播放」则延迟片刻后播新卡的拼读。
+  // 只依赖 index：开关切换、轮询刷新（words 数组换引用）都不触发——
+  // 用 untrack 读其余状态，否则轮询会每 2 秒重播一次。首次进组 index
+  // 未变化，不自动播（"翻页之后"才播，也天然避开无手势的 autoplay 限制）。
+  // 延迟期间再翻页/离开页面由 effect cleanup 取消定时器；用户抢先手动
+  // 点了播放（整段或点读）则让位，不打断。
   $effect(() => {
     void playerState.index;
     stopPlayback();
+    const url = untrack(() => {
+      if (!prefs.autoPlay) return null;
+      const w = current;
+      if (!w || w.audio !== 'done' || playerState.regenerating[w.slug]) return null;
+      return wordAudioUrl(w.slug, 'blend', w.audioVersion);
+    });
+    if (!url) return;
+    const timer = setTimeout(() => {
+      if (playback.url || playback.segment) return;
+      playFull(url);
+    }, AUTO_PLAY_DELAY_MS);
+    return () => clearTimeout(timer);
   });
+
+  // —— 翻页动效 ——
+  // 旧卡从当前位置继续滑出到一侧、新卡同时从另一侧滑入（{#key} 重建 +
+  // 自定义 in/out，新旧 slot 靠 grid-area 1/1 重叠）。手势翻页时 slideOut
+  // 以松手瞬间的拖动位移为起点，出场与拖动无缝衔接，不会先弹回再换内容。
+  let stageW = $state(600); // bind:clientWidth，滑动距离 = 舞台宽度
+  let releaseX = 0; // 松手触发翻页瞬间的拖动位移；按钮/键盘翻页时为 0
+
+  function slideOut(node) {
+    const from = releaseX;
+    releaseX = 0;
+    const to = -playerState.dir * stageW;
+    return {
+      duration: 280,
+      easing: cubicOut,
+      css: (t, u) => `transform: translateX(${from + (to - from) * u}px)`,
+    };
+  }
+
+  function slideIn(node) {
+    const from = playerState.dir * stageW;
+    return {
+      duration: 280,
+      easing: cubicOut,
+      css: (t, u) => `transform: translateX(${u * from}px)`,
+    };
+  }
 
   // —— 左右滑动（pointer 事件，50px 阈值）——
   const SWIPE_THRESHOLD = 50;
@@ -89,9 +140,11 @@
     if (dragging) {
       if (dragX <= -SWIPE_THRESHOLD) {
         swallowNextClick();
+        releaseX = dragX;
         nextCard();
       } else if (dragX >= SWIPE_THRESHOLD) {
         swallowNextClick();
+        releaseX = dragX;
         prevCard();
       }
     }
@@ -131,7 +184,7 @@
 />
 
 <header class="page-header with-back">
-  <a class="back-btn" href="#/">‹ 返回</a>
+  <a class="back-btn" href="#/">‹<span class="back-text"> 返回</span></a>
   <div class="header-title">
     <h1>{playerState.group?.name || '单词组'}</h1>
     {#if words.length > 0}
@@ -140,6 +193,18 @@
       </span>
     {/if}
   </div>
+  <button
+    class="auto-toggle"
+    class:on={prefs.autoPlay}
+    aria-pressed={prefs.autoPlay}
+    title="翻页后自动播放拼读"
+    onclick={toggleAutoPlay}
+  >
+    自动播放
+  </button>
+  <a class="edit-link" href={`#/group/${encodeURIComponent(id)}/edit`} aria-label="单词列表与编辑">
+    ≡
+  </a>
 </header>
 
 <main class="page player-page">
@@ -160,14 +225,15 @@
     </div>
   {:else}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="card-stage"
-      style:transform="translateX({dragX}px)"
-      style:transition={dragging ? 'none' : 'transform 0.2s ease'}
-      onpointerdown={onPointerDown}
-    >
+    <div class="card-stage" bind:clientWidth={stageW} onpointerdown={onPointerDown}>
       {#key playerState.index}
-        <div class="card-slot" in:fly={{ x: playerState.dir * 90, duration: 200 }}>
+        <div
+          class="card-slot"
+          style:transform={dragging ? `translateX(${dragX}px)` : ''}
+          style:transition={dragging ? 'none' : 'transform 0.2s ease'}
+          in:slideIn
+          out:slideOut
+        >
           {#if currentCard}
             <WordCard
               card={currentCard}
@@ -230,8 +296,67 @@
   .header-sub.all-ready {
     color: var(--green);
   }
+  /* 「≡」单词列表：圆形图标钮，紧凑；语义与首页组卡的「≡ 列表」一致 */
+  .edit-link {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: 2px solid var(--primary-soft-border);
+    border-radius: 50%;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--primary-dark);
+    text-decoration: none;
+  }
+  .edit-link:active {
+    background: var(--primary-soft);
+  }
+  /* 「自动播放」开关：文字 pill（模式开关用图标表意不清，始终保留文字），
+     激活态橙底白字。margin-left:auto 把右侧按钮组推到最右 */
+  .auto-toggle {
+    margin-left: auto;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 14px;
+    border: 2px solid var(--primary-soft-border);
+    border-radius: 999px;
+    background: none;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .auto-toggle.on {
+    border-color: var(--primary);
+    background: var(--primary);
+    color: #fff;
+  }
+  .auto-toggle:active {
+    transform: scale(0.96);
+  }
+  /* 小屏：隐藏就绪计数和「返回」文字（‹ 箭头保留），给标题和开关让位 */
+  @media (max-width: 480px) {
+    .header-sub,
+    .back-text {
+      display: none;
+    }
+  }
   .card-stage {
+    display: grid;
     touch-action: pan-y;
+    /* 翻页时新旧卡横向滑过舞台边界，裁掉出界部分，避免视口横向溢出；
+       只裁 x 轴（clip 可与 y 轴 visible 共存），卡片上下阴影不受影响 */
+    overflow-x: clip;
+  }
+  .card-slot {
+    /* 翻页动画期间新旧两个 slot 重叠在同一格，高度取较高者，不上下堆叠 */
+    grid-area: 1 / 1;
     will-change: transform;
   }
   .nav-row {

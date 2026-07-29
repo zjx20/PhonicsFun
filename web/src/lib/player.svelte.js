@@ -6,6 +6,29 @@
 import * as api from './api.js';
 import { toastError, toastSuccess } from './toast.svelte.js';
 
+// 播放偏好：autoPlay = 翻卡后自动播放拼读。持久化到 localStorage，
+// 跨组、跨会话生效（隐私模式等存取失败时静默降级为仅本次会话有效）。
+const AUTOPLAY_KEY = 'phonicsfun.autoplay';
+
+function readAutoPlay() {
+  try {
+    return localStorage.getItem(AUTOPLAY_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export const prefs = $state({ autoPlay: readAutoPlay() });
+
+export function toggleAutoPlay() {
+  prefs.autoPlay = !prefs.autoPlay;
+  try {
+    localStorage.setItem(AUTOPLAY_KEY, prefs.autoPlay ? '1' : '0');
+  } catch {
+    // 存不了就只在本次会话内生效
+  }
+}
+
 export const playerState = $state({
   groupId: null,
   group: null, // GET /api/groups/{id} 的返回
@@ -28,7 +51,9 @@ const cuesFailures = new Map(); // 同 cardFailures，但 cues 拉取失败只�
 
 const inFlight = (s) => s === 'pending' || s === 'running';
 
-export async function openGroup(id) {
+// initialSlug（可选）：加载完成后定位到该词的卡片（编辑/列表页点词进入）。
+// 只在这里定位一次，后续轮询刷新不会重置 index。
+export async function openGroup(id, initialSlug = '') {
   closeGroup();
   active = true;
   playerState.groupId = id;
@@ -44,6 +69,10 @@ export async function openGroup(id) {
   cuesFailures.clear();
   pollErrorShown = false;
   await refreshGroup({ initial: true });
+  if (initialSlug) {
+    const i = (playerState.group?.words ?? []).findIndex((w) => w.slug === initialSlug);
+    if (i >= 0) playerState.index = i;
+  }
   playerState.loading = false;
 }
 
