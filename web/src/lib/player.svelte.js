@@ -69,10 +69,9 @@ async function refreshGroup({ initial = false } = {}) {
       if (w.text === 'done' && !playerState.cards[w.slug]) {
         fetchCard(w.slug);
       }
-      // cues 与音频一起生成：音频就绪且卡片已拿到（需要 generated_at 做版本号）才拉
-      const card = playerState.cards[w.slug];
-      if (w.audio === 'done' && card && playerState.cues[w.slug] === undefined) {
-        fetchCues(w.slug, card.generated_at);
+      // cues 与音频一起生成：音频就绪即拉，URL 版本号用 audioVersion
+      if (w.audio === 'done' && playerState.cues[w.slug] === undefined) {
+        fetchCues(w.slug, w.audioVersion);
       }
     }
   } catch (err) {
@@ -142,9 +141,9 @@ async function fetchCard(slug, { force = false } = {}) {
     playerState.cards[slug] = card;
     cardFailures.delete(slug);
     // 音频已就绪的话顺带拉 cues；force（重新生成完成）时连 cues 一起强制重拉，
-    // 因为 cues 与 blend.wav 同步重新生成，且 URL 版本号取自新的 generated_at。
+    // 因为 cues 与 blend.wav 同步重新生成，URL 版本号取轮询到的新 audioVersion。
     const w = playerState.group?.words?.find((x) => x.slug === slug);
-    if (w?.audio === 'done') fetchCues(slug, card.generated_at, { force });
+    if (w?.audio === 'done') fetchCues(slug, w.audioVersion, { force });
   } catch (err) {
     const count = (cardFailures.get(slug) ?? 0) + 1;
     cardFailures.set(slug, count);

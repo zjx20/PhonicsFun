@@ -28,16 +28,15 @@
   const currentCard = $derived(current ? (playerState.cards[current.slug] ?? null) : null);
   const readyCount = $derived(words.filter((w) => w.text === 'done' && w.audio === 'done').length);
 
-  // 预加载前后相邻卡片的两段音频
+  // 预加载前后相邻卡片的两段音频（URL 版本号 = audioVersion，与 WordCard 一致）
   $effect(() => {
     const len = words.length;
     if (len === 0) return;
     for (const offset of [1, len - 1]) {
       const w = words[(playerState.index + offset) % len];
-      const card = playerState.cards[w.slug];
-      if (card && w.audio === 'done') {
-        preload(wordAudioUrl(w.slug, 'word', card.generated_at));
-        preload(wordAudioUrl(w.slug, 'blend', card.generated_at));
+      if (w.audio === 'done') {
+        preload(wordAudioUrl(w.slug, 'word', w.audioVersion));
+        preload(wordAudioUrl(w.slug, 'blend', w.audioVersion));
       }
     }
   });

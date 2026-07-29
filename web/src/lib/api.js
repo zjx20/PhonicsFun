@@ -6,7 +6,9 @@
 //   POST   /api/extract                                {text} 或 multipart image → {words:[...]}
 //   POST   /api/groups                                 {name?, words:[]} → {id}
 //   GET    /api/groups                                 [{id,name,createdAt,total,ready}]
-//   GET    /api/groups/{id}                            {..., words:[{word,slug,text,audio,error?}]}
+//   GET    /api/groups/{id}                            {..., words:[{word,slug,text,audio,
+//                                                        audioVersion?,error?}]}；audioVersion 是
+//                                                        音频产物 mtime，音频/cues URL 的防缓存版本
 //   DELETE /api/groups/{id}                            ?purge=1 连带删除无引用的词目录
 //   GET    /api/words/{slug}                           card.json v2：{schema:2, word, ipa,
 //                                                        senses:[{pos,zh,en}], examples:[{en,zh}],
@@ -99,7 +101,7 @@ export function getCard(slug) {
 }
 
 /**
- * blend 音频时间标注地址。version 传 card.generated_at，与音频同一套防缓存机制。
+ * blend 音频时间标注地址。version 传组详情里的 word.audioVersion，与音频同一套防缓存机制。
  */
 export function blendCuesUrl(slug, version) {
   return `/api/words/${encodeURIComponent(slug)}/audio/blend.cues.json?v=${encodeURIComponent(version || '')}`;
@@ -132,7 +134,9 @@ export function regenerateWord(slug, target) {
 
 /**
  * 音频地址，kind: "word" | "blend"。
- * version 传 card.generated_at：重新生成后 generated_at 变化，URL 随之变化，绕开浏览器缓存。
+ * version 传组详情里的 word.audioVersion（音频文件 mtime）：任何形式的音频重新
+ * 生成都会重写文件、版本必变，URL 随之变化，绕开浏览器缓存。不能用
+ * card.generated_at——它是文本的版本，audio-only 重生成时不变。
  */
 export function wordAudioUrl(slug, kind, version) {
   return `/api/words/${encodeURIComponent(slug)}/audio/${kind}.wav?v=${encodeURIComponent(version || '')}`;

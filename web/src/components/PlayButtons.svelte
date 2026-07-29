@@ -36,27 +36,30 @@
 </div>
 
 <style>
+  /* 位于卡片顶部操作行（WordCard .card-top），与 ⋮ 同排：flex:1 占满 ⋮ 之外的宽度 */
   .play-row {
     display: flex;
-    gap: 12px;
-    margin-top: 20px;
+    flex: 1;
+    min-width: 0;
+    gap: 8px;
   }
   .play-btn {
     flex: 1;
-    min-height: 64px;
-    font-size: 20px;
+    min-height: 46px;
+    padding: 0 12px;
+    font-size: 17px;
     font-weight: 800;
-    border-radius: 18px;
+    border-radius: 999px;
     background: var(--primary);
     color: #fff;
-    box-shadow: 0 4px 14px rgba(240, 118, 31, 0.35);
+    box-shadow: 0 3px 10px rgba(240, 118, 31, 0.3);
   }
   .play-btn:active:not(:disabled) {
     transform: scale(0.97);
   }
   .play-btn.playing {
     background: var(--green);
-    box-shadow: 0 4px 14px rgba(47, 169, 110, 0.35);
+    box-shadow: 0 3px 10px rgba(47, 169, 110, 0.3);
   }
   .play-btn:disabled {
     background: var(--track);

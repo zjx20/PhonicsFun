@@ -8,7 +8,8 @@
   // 无 cues（旧数据 404 降级）时一律不可点，也不带可点样式。
   //
   // 卡拉OK：activeCue 由 WordCard 在整段播放 blend.wav 时轮询命中传入——
-  // chunk cue 高亮对应格子，syllable cue 高亮整个音节组（tail 由 WordCard 自己处理）。
+  // chunk cue 高亮对应格子，syllable cue 高亮整个音节组，tail/word cue
+  //（整词连读 / 点大字区的整词点读）用一个框框住全部音节组。
   import { playSegment } from '../lib/playback.svelte.js';
 
   let { syllables, blendUrl = '', cues = null, canPlay = false, activeCue = null } = $props();
@@ -48,9 +49,10 @@
   const isChunkActive = (s, c) =>
     activeCue?.kind === 'chunk' && activeCue.syllable === s && activeCue.chunk === c;
   const isSylActive = (s) => activeCue?.kind === 'syllable' && activeCue.syllable === s;
+  const tailActive = $derived(activeCue?.kind === 'tail' || activeCue?.kind === 'word');
 </script>
 
-<div class="syllable-row">
+<div class="syllable-row" class:tail-active={tailActive}>
   {#each groups as { syl, s, start } (s)}
     <div class="syllable-group" class:active={isSylActive(s)}>
       <div class="chunk-list">
@@ -99,16 +101,27 @@
     flex-wrap: wrap; /* 小屏允许音节组换行 */
     justify-content: center;
     align-items: flex-start;
-    gap: 10px;
-    margin-top: 18px;
+    gap: 8px;
+    /* 紧贴内容居中：tail 高亮的框贴着音节组，不横跨整卡 */
+    width: fit-content;
+    max-width: 100%;
+    margin: 10px auto 0;
+    padding: 5px;
+    border-radius: 18px;
+    transition:
+      background 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+  .syllable-row.tail-active {
+    background: var(--primary-soft);
+    box-shadow: 0 0 0 3px var(--primary);
   }
   .syllable-group {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
-    padding: 8px 8px 4px;
-    border-radius: 18px;
+    padding: 5px 6px 2px;
+    border-radius: 14px;
     background: var(--bg);
     border: 1.5px solid var(--track);
     transition:
@@ -124,19 +137,20 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 6px;
+    gap: 4px;
   }
   .chunk-cell {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-start;
-    gap: 2px;
-    min-width: 56px;
-    min-height: 64px;
-    padding: 10px 12px;
+    justify-content: center;
+    gap: 1px;
+    /* 44×54 起步：既是触控目标下限（全局约定 ≥44px），也让长单词在小屏尽量排进一行 */
+    min-width: 44px;
+    min-height: 54px;
+    padding: 5px 8px;
     border: none;
-    border-radius: 14px;
+    border-radius: 11px;
     font-family: inherit;
     cursor: default;
     transition:
@@ -162,31 +176,33 @@
     color: var(--muted);
   }
   .chunk-grapheme {
-    font-size: 28px;
+    font-size: 22px;
     font-weight: 800;
-    line-height: 1.2;
+    line-height: 1.15;
   }
   .chunk-grapheme.silent-text {
     font-style: italic;
     color: var(--muted);
   }
   .chunk-phoneme {
-    font-size: 14px;
+    font-size: 12px;
     opacity: 0.85;
   }
   .chunk-silent-note {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--muted);
   }
   .syllable-label {
+    /* 视觉上只是一行小字，但保持 44px 高的命中区（全局触控约定） */
     min-width: 44px;
     min-height: 44px;
+    margin-top: -4px;
     padding: 0 12px;
     border: none;
     background: none;
     border-radius: 12px;
     font-family: inherit;
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 700;
     color: var(--muted);
     cursor: default;
