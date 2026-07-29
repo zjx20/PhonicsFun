@@ -24,7 +24,10 @@
 //                                                        cues:[{kind:"chunk"|"syllable"|"tail",
 //                                                        syllable, chunk, start_ms, end_ms}]}；
 //                                                        404 = 旧数据无 cues，前端须优雅降级
-//   POST   /api/words/{slug}/regenerate                {target:"text"|"audio"|"both"} → 202
+//   POST   /api/words/{slug}/regenerate                {target:"text"|"audio"|"both", feedback?} → 202；
+//                                                        feedback 是用户纠错意见（≤500 字），注入
+//                                                        文本生成 prompt；音频脚本是机械拼装的，
+//                                                        target=audio 时 feedback 被忽略
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -136,12 +139,16 @@ export async function getBlendCues(slug, version) {
   return res.json();
 }
 
-/** POST /api/words/{slug}/regenerate，target: "text" | "audio" | "both" → 202 */
-export function regenerateWord(slug, target) {
+/**
+ * POST /api/words/{slug}/regenerate，target: "text" | "audio" | "both" → 202。
+ * feedback（可选）是用户对当前卡片的纠错意见，后端注入文本生成 prompt；
+ * target=audio 时后端忽略它（音频脚本机械拼装，不接受自由文本）。
+ */
+export function regenerateWord(slug, target, feedback = '') {
   return request(`/api/words/${encodeURIComponent(slug)}/regenerate`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ target }),
+    body: JSON.stringify({ target, feedback: feedback || undefined }),
   });
 }
 

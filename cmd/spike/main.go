@@ -5,7 +5,7 @@
 //
 // 用法：
 //
-//	GEMINI_API_KEY=... go run ./cmd/spike [-word action] [-out ./spike-out] [-text]
+//	GEMINI_API_KEY=... go run ./cmd/spike [-word action] [-out ./spike-out] [-text] [-feedback "音标不对"]
 //
 // -text 额外验证 generateContent 文本链路（生成真实卡片再据此发音）；
 // 默认用内置示例卡，不消耗文本模型配额。输出除成品 blend/word WAV 与
@@ -34,6 +34,7 @@ func main() {
 	word := flag.String("word", "action", "要拼读的单词")
 	out := flag.String("out", "./spike-out", "输出目录")
 	genText := flag.Bool("text", false, "先用文本模型生成真实卡片（额外验证 generateContent 链路）")
+	feedback := flag.String("feedback", "", "注入文本生成的用户纠错反馈（需配合 -text，验证 regenerate 反馈链路）")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -52,7 +53,7 @@ func main() {
 	if *genText {
 		log.Printf("生成卡片文本: %s ...", *word)
 		start := time.Now()
-		card, err = client.GenerateCard(ctx, *word)
+		card, err = client.GenerateCard(ctx, *word, *feedback)
 		if err != nil {
 			log.Fatalf("GenerateCard: %v", err)
 		}

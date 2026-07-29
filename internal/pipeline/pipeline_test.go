@@ -49,15 +49,17 @@ func fakeSpeech(items int) []byte {
 type fakeLLM struct {
 	mu           sync.Mutex
 	genCalls     []string
+	genFeedbacks []string       // 与 genCalls 一一对应的 feedback 参数
 	genFail      map[string]int // word → 前 N 次调用返回可重试错误
 	sessions     int
 	speakPerSess []int
 }
 
-func (f *fakeLLM) GenerateCard(_ context.Context, word string) (*store.Card, error) {
+func (f *fakeLLM) GenerateCard(_ context.Context, word, feedback string) (*store.Card, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.genCalls = append(f.genCalls, word)
+	f.genFeedbacks = append(f.genFeedbacks, feedback)
 	if n := f.genFail[word]; n > 0 {
 		f.genFail[word] = n - 1
 		return nil, errors.New("fake transient failure")
@@ -338,7 +340,7 @@ func TestSkipExistingAndRecover(t *testing.T) {
 
 	// 预置 cat 的全部产物、dog 只有卡片
 	for _, w := range []string{"cat", "dog"} {
-		card, _ := f.GenerateCard(context.Background(), w)
+		card, _ := f.GenerateCard(context.Background(), w, "")
 		if err := st.WriteCard(store.Slug(w), card); err != nil {
 			t.Fatal(err)
 		}
@@ -410,7 +412,7 @@ func TestRegenerateCascade(t *testing.T) {
 	f.mu.Unlock()
 
 	// text 重生成必须级联音频
-	if err := p.Regenerate("cat", RegenText); err != nil {
+	if err := p.Regenerate("cat", RegenText, ""); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return allDone(p, []string{"cat"}) })
@@ -427,7 +429,7 @@ func TestRegenerateCascade(t *testing.T) {
 	f.mu.Lock()
 	genBefore, speaksBefore = len(f.genCalls), totalSpeaks(f)
 	f.mu.Unlock()
-	if err := p.Regenerate("cat", RegenAudio); err != nil {
+	if err := p.Regenerate("cat", RegenAudio, ""); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return allDone(p, []string{"cat"}) })
@@ -440,9 +442,47 @@ func TestRegenerateCascade(t *testing.T) {
 	}
 	f.mu.Unlock()
 
-	if err := p.Regenerate("cat", RegenTarget("bogus")); err == nil {
+	if err := p.Regenerate("cat", RegenTarget("bogus"), ""); err == nil {
 		t.Error("未知 target 应报错")
 	}
+}
+
+// TestRegenerateFeedback：用户反馈必须到达文本生成调用，且只对本次重新
+// 生成生效——消费后不得残留到之后与它无关的生成。
+func TestRegenerateFeedback(t *testing.T) {
+	f := &fakeLLM{}
+	p, _ := newTestPipeline(t, f)
+	p.Start(context.Background())
+	defer p.Stop()
+
+	p.EnqueueWords([]string{"cat"})
+	waitFor(t, func() bool { return allDone(p, []string{"cat"}) })
+	f.mu.Lock()
+	if f.genFeedbacks[len(f.genFeedbacks)-1] != "" {
+		t.Errorf("常规生成不应带反馈: %q", f.genFeedbacks)
+	}
+	f.mu.Unlock()
+
+	if err := p.Regenerate("cat", RegenText, "音标不对，应该是重音在第一音节"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return allDone(p, []string{"cat"}) })
+	f.mu.Lock()
+	if got := f.genFeedbacks[len(f.genFeedbacks)-1]; got != "音标不对，应该是重音在第一音节" {
+		t.Errorf("反馈未到达 GenerateCard: %q", got)
+	}
+	f.mu.Unlock()
+
+	// 再来一次不带反馈的重新生成：上次的反馈必须已被消费
+	if err := p.Regenerate("cat", RegenBoth, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return allDone(p, []string{"cat"}) })
+	f.mu.Lock()
+	if got := f.genFeedbacks[len(f.genFeedbacks)-1]; got != "" {
+		t.Errorf("旧反馈残留到了后续生成: %q", got)
+	}
+	f.mu.Unlock()
 }
 
 // TestAudioVersionBumpsOnRegenerate：audioVersion 是前端音频/cues URL 的
@@ -462,7 +502,7 @@ func TestAudioVersionBumpsOnRegenerate(t *testing.T) {
 	}
 
 	time.Sleep(10 * time.Millisecond) // mtime 是毫秒级，确保重写后可分辨
-	if err := p.Regenerate("cat", RegenAudio); err != nil {
+	if err := p.Regenerate("cat", RegenAudio, ""); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return allDone(p, []string{"cat"}) })
@@ -478,7 +518,7 @@ func TestUnusableWordAudioRegenerated(t *testing.T) {
 	f := &fakeLLM{}
 	p, st := newTestPipeline(t, f)
 
-	card, _ := f.GenerateCard(context.Background(), "cat")
+	card, _ := f.GenerateCard(context.Background(), "cat", "")
 	if err := st.WriteCard(store.Slug("cat"), card); err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +565,7 @@ func TestStatusDerivation(t *testing.T) {
 	if got := p.Status("ghost"); got.Text != StatePending || got.Audio != StatePending {
 		t.Errorf("未知词应为 pending: %+v", got)
 	}
-	card, _ := f.GenerateCard(context.Background(), "cat")
+	card, _ := f.GenerateCard(context.Background(), "cat", "")
 	if err := st.WriteCard("cat", card); err != nil {
 		t.Fatal(err)
 	}

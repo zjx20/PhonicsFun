@@ -102,15 +102,29 @@ func TestPOSDict(t *testing.T) {
 
 func TestBuildCardPrompt(t *testing.T) {
 	refs := cardRefs{ARPAbet: "W ER1 D", SylCount: 1, Hyph: "word", POS: "n.,v."}
-	p := buildCardPrompt("word", refs)
+	p := buildCardPrompt("word", refs, "")
 	for _, want := range []string{"W ER1 D", "音节切分参照", "词性参照", "n.,v.", "现在处理单词：word"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt 缺少 %q", want)
 		}
 	}
-	p2 := buildCardPrompt("zzz", cardRefs{})
+	if strings.Contains(p, "<feedback>") {
+		t.Error("无反馈时不应有反馈段落")
+	}
+	p2 := buildCardPrompt("zzz", cardRefs{}, "")
 	if strings.Contains(p2, "权威参照") {
 		t.Error("无任何参照时不应有参照段落")
+	}
+
+	// 用户反馈注入在 <feedback> 标签内，且位于"现在处理单词"之前
+	pf := buildCardPrompt("word", refs, "音标不对")
+	if !strings.Contains(pf, "<feedback>\n音标不对\n</feedback>") {
+		t.Errorf("反馈未注入 prompt:\n%s", pf)
+	}
+	// 校验失败重试的 prompt 同样要保留反馈
+	pr := buildCardRetryPrompt("word", refs, "音标不对", "拼接不等于原词")
+	if !strings.Contains(pr, "<feedback>") || !strings.Contains(pr, "拼接不等于原词") {
+		t.Error("重试 prompt 应同时含反馈与失败原因")
 	}
 }
 

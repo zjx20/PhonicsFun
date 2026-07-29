@@ -1,11 +1,18 @@
 <script>
   // 卡片右上 ⋮ 的 bottom-sheet：先选目标，再二次确认，防手滑触发 AI 调用。
+  // 确认步骤可附纠错反馈（如"音标不对"），注入文本生成 prompt；音频脚本
+  // 是机械拼装的、不接受自由文本，所以 target=audio 无反馈框，改提示用户
+  // 内容/发音标注问题应走文本重生成（自动级联重生音频）。
   let { open = false, word = '', onclose, onconfirm } = $props();
 
   let chosen = $state(null); // null | 'text' | 'audio' | 'both'
+  let feedback = $state('');
 
   $effect(() => {
-    if (!open) chosen = null;
+    if (!open) {
+      chosen = null;
+      feedback = '';
+    }
   });
 
   const labels = {
@@ -22,8 +29,23 @@
       {#if chosen}
         <p class="sheet-title">确认{labels[chosen]}？</p>
         <p class="sheet-sub">会重新调用 AI，覆盖「{word}」当前内容</p>
+        {#if chosen === 'audio'}
+          <p class="sheet-hint">音频会按当前卡片内容重新录制。若是拼读拆解、注音这类内容问题，请选「重新生成文本」并写明哪里不对（音频会跟着重新生成）。</p>
+        {:else}
+          <textarea
+            class="feedback-input"
+            rows="3"
+            maxlength="500"
+            placeholder="可选：告诉 AI 哪里不对，如“音标不对，重音应在第一音节”“例句太难”"
+            bind:value={feedback}
+          ></textarea>
+        {/if}
         <div class="sheet-actions">
-          <button class="btn btn-danger sheet-action" onclick={() => onconfirm(chosen)}>确认</button>
+          <button
+            class="btn btn-danger sheet-action"
+            onclick={() => onconfirm(chosen, chosen === 'audio' ? '' : feedback.trim())}
+            >确认</button
+          >
           <button class="btn btn-ghost sheet-action" onclick={() => (chosen = null)}>取消</button>
         </div>
       {:else}
@@ -74,6 +96,33 @@
     text-align: center;
     margin-bottom: 16px;
     word-break: break-all;
+  }
+  .sheet-hint {
+    margin-bottom: 16px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--bg);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+  .feedback-input {
+    display: block;
+    width: 100%;
+    margin-bottom: 16px;
+    padding: 10px 12px;
+    border: 1.5px solid var(--track);
+    border-radius: 12px;
+    background: var(--bg);
+    font-family: inherit;
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--text);
+    resize: none;
+  }
+  .feedback-input:focus {
+    outline: none;
+    border-color: var(--primary);
   }
   .sheet-item {
     display: block;

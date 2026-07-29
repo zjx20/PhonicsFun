@@ -134,8 +134,12 @@ var wordsSchema = &genai.Schema{
 // GenerateCard 生成一张单词卡的文本内容。三路参照命中即注入 prompt
 // （CMUdict 音素 + 音节数、Moby 音节切分、ECDICT 词性）；生成结果做硬校验
 // （store.Card.Validate 全部不变量），失败带反馈重试一次。
-func (c *Client) GenerateCard(ctx context.Context, word string) (*store.Card, error) {
+// feedback 是用户重新生成时附带的纠错意见（可为空），只注入文本 prompt；
+// 发音问题也走这里——音频脚本由 respell/anchor_word 机械拼装，不接受自由文本
+// （见 AGENTS.md 不变量 5）。
+func (c *Client) GenerateCard(ctx context.Context, word, feedback string) (*store.Card, error) {
 	word = strings.ToLower(strings.TrimSpace(word))
+	feedback = strings.TrimSpace(feedback)
 	arpabet := c.dict.Lookup(word)
 	refs := cardRefs{
 		ARPAbet:  arpabet,
@@ -144,7 +148,7 @@ func (c *Client) GenerateCard(ctx context.Context, word string) (*store.Card, er
 		POS:      c.pos.Lookup(word),
 	}
 
-	card, err := c.generateCardOnce(ctx, word, buildCardPrompt(word, refs))
+	card, err := c.generateCardOnce(ctx, word, buildCardPrompt(word, refs, feedback))
 	if err == nil {
 		return card, nil
 	}
@@ -152,7 +156,7 @@ func (c *Client) GenerateCard(ctx context.Context, word string) (*store.Card, er
 	if !errors.As(err, &vErr) {
 		return nil, err // API 层错误交给上层退避重试
 	}
-	return c.generateCardOnce(ctx, word, buildCardRetryPrompt(word, refs, vErr.problem))
+	return c.generateCardOnce(ctx, word, buildCardRetryPrompt(word, refs, feedback, vErr.problem))
 }
 
 type validationError struct{ problem string }

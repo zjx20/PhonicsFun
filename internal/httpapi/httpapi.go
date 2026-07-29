@@ -244,13 +244,23 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, s.store.AudioPath(slug, kind))
 }
 
+// maxFeedbackRunes 限制 regenerate 反馈长度：反馈会整段注入生成 prompt，
+// 过长的输入既没必要也浪费 token。
+const maxFeedbackRunes = 500
+
 func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	slug := store.Slug(r.PathValue("slug"))
 	var body struct {
-		Target string `json:"target"`
+		Target   string `json:"target"`
+		Feedback string `json:"feedback"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpError(w, http.StatusBadRequest, "请求体解析失败")
+		return
+	}
+	feedback := strings.TrimSpace(body.Feedback)
+	if len([]rune(feedback)) > maxFeedbackRunes {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("反馈内容过长（最多 %d 字）", maxFeedbackRunes))
 		return
 	}
 	word, err := s.wordForSlug(slug)
@@ -258,7 +268,7 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "未找到该单词")
 		return
 	}
-	if err := s.pipe.Regenerate(word, pipeline.RegenTarget(body.Target)); err != nil {
+	if err := s.pipe.Regenerate(word, pipeline.RegenTarget(body.Target), feedback); err != nil {
 		httpError(w, http.StatusConflict, err.Error())
 		return
 	}

@@ -48,7 +48,7 @@ web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也�
 
 1. **产物文件存在性即完成态**。`data/words/<slug>/card.json` 在 = 文本完成，`word.wav`+`blend.wav` 在 = 音频完成。`blend.cues.json`（时间标注）不参与完成态判定，但生成顺序保证"blend.wav 在则 cues 必在"（先写 cues 后写 wav）。没有状态文件；pending/running/failed 只存在于 pipeline 内存（进程重启即丢，`Pipeline.Recover()` 扫描补缺口）。任何引入"第二事实源"的改动都会破坏崩溃自洽性。
 2. **所有落盘走原子写**（`store.writeFileAtomic`：temp + fsync + rename）。磁盘上不允许出现半成品文件。
-3. **重新生成（force）= 先删产物再入队**（`Pipeline.Regenerate`），job 本身不带 force 标志，worker 只看文件是否存在。text 重生成会连带删音频（拼读脚本依赖新文本），这个级联不能去掉；`DeleteAudio` 连带删 cues。
+3. **重新生成（force）= 先删产物再入队**（`Pipeline.Regenerate`），job 本身不带 force 标志，worker 只看文件是否存在。text 重生成会连带删音频（拼读脚本依赖新文本），这个级联不能去掉；`DeleteAudio` 连带删 cues。重新生成可附用户纠错反馈（≤500 字），只注入文本生成 prompt（`GenerateCard` 的 `<feedback>` 段）——音频脚本机械拼装、不接受自由文本（见不变量 5），target=audio 时反馈被忽略。反馈存 pipeline 内存（`slug → feedback`，worker 处理时消费，最后一次反馈赢）而非 job/磁盘：与不变量 1 同理，不落盘就不会成为第二事实源，重启后 Recover 补缺口时无反馈是有意为之。
 4. **card.json 是带版本的两级结构**（`schema: 2`，音节 → 音节内 chunk）。硬不变量（`store.Card.Validate`，llm 生成时校验、前端渲染时复验）：音节 text 依序拼接 == 小写 word；音节内 chunk 的 grapheme 依序拼接 == 音节 text（不发音字母单独成 chunk 标 `silent:true`）；非 silent chunk 必有 `respell` + `anchor_word`，音节必有 `respell`；senses/examples 非空且词性在标准缩写枚举内；digraph 不可拆开、blend 不可合并（机械黑白名单）。**改 schema 必须递增 `store.CardSchemaVersion`**——`Recover()` 发现旧版卡会自动删产物重建（升级即全量重生成，耗一轮配额）。
 5. **音频 prompt 永不含裸 IPA，也不含裸拼写的音节**（Live 模型会把 tion 读成 tee-on）。拼读条目由 `llm.BuildBlendLines` 机械拼装：chunk 行用 chunk.respell（spelling voice，不弱读），音节行/连读用 syllable.respell（真实读音，含 schwa）。改拼读发音应改 respell/anchor_word 的生成质量，而不是往脚本里塞 IPA。
 6. **blend 音频与时间标注由"分割重组"构造**（`pipeline.BlendAudio`）：主体轮一次连续朗读全部条目（模型条目间停顿≈1s 是静音分割的生命线，systemInstruction 与脚本里的停顿指令不能删），按已知条目数 `wav.SplitBySilence` 切段（段数不符 = 朗读失控，自动重试），修剪后按固定静音间隔重组。**收尾段（音节串读 + 整词）本地拼装，不占朗读轮次**：串读音节复用主体轮切出的音节段（`wav.Speedup` 快放 + 极短间隔），整词段从已落盘的 word.wav 按静音切出慢速/常速两遍（多音节接常速遍，单音节用慢速遍）——点读、拼读收尾、整词按钮三处播的是同一份录音，听感不会互相漂移，这个同源性不能破坏。word 轮脚本要求两遍之间整秒静音，落盘前硬校验能切出两段；存量 word.wav 切不出两遍时自动删除重生（`errWordAudioUnusable`）。tail 段内的整词部分另标 `word` 子区间 cue（点大字区单独播一遍完整读音），它与 tail 重叠且必须排在 tail 之后——前端整段播放的命中逻辑靠这个顺序。**拼读节奏调 pipeline 的 gap/tailSyl* 常量，不要去调 prompt**；cues 毫秒即重组时的字节偏移，改重组逻辑必须同步保证 cues 精确。
@@ -71,7 +71,7 @@ web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也�
 | `GET /api/words/{slug}` | card.json（v2：schema/senses/examples/syllables） |
 | `GET /api/words/{slug}/audio/{word\|blend}.wav` | 音频，支持 Range（iOS Safari 必需） |
 | `GET /api/words/{slug}/audio/blend.cues.json` | blend 时间标注（点读/高亮）；404 = 无 cues，前端降级 |
-| `POST /api/words/{slug}/regenerate` | `{target:"text"\|"audio"\|"both"}` → 202；生成中返回 409 |
+| `POST /api/words/{slug}/regenerate` | `{target:"text"\|"audio"\|"both", feedback?}` → 202；生成中返回 409；`feedback` 是用户纠错意见（≤500 字，超长 400），注入文本生成 prompt，target=audio 时忽略 |
 
 ## 环境与已知坑
 

@@ -58,9 +58,10 @@ type AudioSession interface {
 	Close() error
 }
 
-// LLM 抽象 pipeline 依赖的模型调用。
+// LLM 抽象 pipeline 依赖的模型调用。feedback 是用户重新生成时附带的
+// 纠错意见（常规生成为空串）。
 type LLM interface {
-	GenerateCard(ctx context.Context, word string) (*store.Card, error)
+	GenerateCard(ctx context.Context, word, feedback string) (*store.Card, error)
 	ConnectLive(ctx context.Context) (AudioSession, error)
 }
 
@@ -91,6 +92,11 @@ type Pipeline struct {
 	states  map[string]*wordState // slug → 内存状态；文件缺位时的补充事实源
 	inText  map[string]bool       // 队列去重
 	inAudio map[string]bool
+	// slug → 用户重新生成时附带的纠错意见，text worker 处理该词时消费。
+	// 不随 job 走：入队去重丢弃新 job 时反馈仍要生效（最后一次反馈赢）。
+	// 只存内存，与 pending/running 状态同命——重启后 Recover 补缺口时无反馈，
+	// 这是有意为之：磁盘上不引入第二事实源（见包注释的核心约定）。
+	feedback map[string]string
 
 	// 重试节奏，测试中注入零值加速
 	backoff      []time.Duration
@@ -109,6 +115,7 @@ func New(st *store.Store, l LLM) *Pipeline {
 		states:       map[string]*wordState{},
 		inText:       map[string]bool{},
 		inAudio:      map[string]bool{},
+		feedback:     map[string]string{},
 		backoff:      []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 15 * time.Second, 60 * time.Second},
 		audioRetries: 3,
 	}
@@ -140,8 +147,10 @@ func (p *Pipeline) EnqueueWords(words []string) {
 }
 
 // Regenerate 删除对应产物并高优先级重新入队。若该词正在生成中则拒绝，
-// 避免删掉 worker 正在写的产物。
-func (p *Pipeline) Regenerate(word string, target RegenTarget) error {
+// 避免删掉 worker 正在写的产物。feedback 是用户的纠错意见（可为空），
+// 只注入文本生成 prompt——音频脚本机械拼装、不接受自由文本，所以
+// target=audio 时 feedback 被忽略（发音标注问题应重生成文本，自动级联音频）。
+func (p *Pipeline) Regenerate(word string, target RegenTarget, feedback string) error {
 	slug := store.Slug(word)
 	p.mu.Lock()
 	if st, ok := p.states[slug]; ok && (st.text == StateRunning || st.audio == StateRunning) {
@@ -158,6 +167,11 @@ func (p *Pipeline) Regenerate(word string, target RegenTarget) error {
 		}
 		if err := p.store.DeleteAudio(slug); err != nil {
 			return err
+		}
+		if feedback != "" {
+			p.mu.Lock()
+			p.feedback[slug] = feedback
+			p.mu.Unlock()
 		}
 		p.enqueueText(job{Word: word, Slug: slug}, true)
 	case RegenAudio:
@@ -298,6 +312,11 @@ func (p *Pipeline) textWorker(ctx context.Context) {
 		}
 		p.mu.Lock()
 		delete(p.inText, j.Slug)
+		// 反馈随本次处理消费掉（无论后续成败）：它描述的是"上一版卡片"的
+		// 问题，失败重试由用户再触发时会带上新反馈，旧反馈不能残留误伤
+		// 之后与它无关的生成。
+		feedback := p.feedback[j.Slug]
+		delete(p.feedback, j.Slug)
 		p.mu.Unlock()
 
 		if p.store.HasCard(j.Slug) {
@@ -307,7 +326,7 @@ func (p *Pipeline) textWorker(ctx context.Context) {
 		}
 
 		p.set(j, func(s *wordState) { s.text = StateRunning; s.err = "" })
-		card, err := p.generateWithRetry(ctx, j.Word)
+		card, err := p.generateWithRetry(ctx, j.Word, feedback)
 		if err != nil {
 			log.Printf("[text] %s 失败: %v", j.Word, err)
 			p.set(j, func(s *wordState) { s.text = StateFailed; s.err = err.Error() })
@@ -331,7 +350,7 @@ func (p *Pipeline) maybeEnqueueAudio(j job) {
 	}
 }
 
-func (p *Pipeline) generateWithRetry(ctx context.Context, word string) (*store.Card, error) {
+func (p *Pipeline) generateWithRetry(ctx context.Context, word, feedback string) (*store.Card, error) {
 	var lastErr error
 	for attempt := 0; attempt <= len(p.backoff); attempt++ {
 		if attempt > 0 {
@@ -339,7 +358,7 @@ func (p *Pipeline) generateWithRetry(ctx context.Context, word string) (*store.C
 				return nil, ctx.Err()
 			}
 		}
-		card, err := p.llm.GenerateCard(ctx, word)
+		card, err := p.llm.GenerateCard(ctx, word, feedback)
 		if err == nil {
 			return card, nil
 		}

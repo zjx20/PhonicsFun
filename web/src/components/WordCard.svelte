@@ -158,9 +158,9 @@
   open={menuOpen}
   word={card.word}
   onclose={() => (menuOpen = false)}
-  onconfirm={(target) => {
+  onconfirm={(target, feedback) => {
     menuOpen = false;
-    onregenerate(word.slug, target);
+    onregenerate(word.slug, target, feedback);
   }}
 />
 

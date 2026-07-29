@@ -206,9 +206,10 @@ async function fetchCues(slug, version, { force = false } = {}) {
   }
 }
 
-export async function regenerate(slug, target) {
+// feedback（可选）：用户的纠错意见，随请求进入文本生成 prompt（见 api.js）。
+export async function regenerate(slug, target, feedback = '') {
   try {
-    await api.regenerateWord(slug, target);
+    await api.regenerateWord(slug, target, feedback);
     playerState.regenerating[slug] = { target, startedAt: Date.now(), seenActive: false };
     toastSuccess('已提交重新生成');
     // 尽快开始跟踪状态
