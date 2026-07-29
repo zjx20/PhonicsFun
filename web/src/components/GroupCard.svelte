@@ -52,6 +52,10 @@
     </div>
   </a>
 
+  <a class="list-btn" href={`#/group/${encodeURIComponent(group.id)}/edit`} aria-label="单词列表与编辑">
+    ≡ 列表
+  </a>
+
   <button
     bind:this={btnEl}
     class="icon-btn menu-btn"
@@ -77,6 +81,9 @@
           <button class="btn btn-ghost btn-small" onclick={closeMenu}>取消</button>
         </div>
       {:else}
+        <a class="menu-item menu-link" href={`#/group/${encodeURIComponent(group.id)}/edit`} onclick={closeMenu}>
+          ✎ 编辑单词
+        </a>
         <button class="menu-item" onclick={() => (confirming = true)}>🗑 删除</button>
       {/if}
     </div>
@@ -92,7 +99,8 @@
   }
   .group-main {
     display: block;
-    padding: 18px 56px 18px 20px;
+    /* 右侧给「≡ 列表」pill + ⋮ 菜单留位（见 .list-btn/.menu-btn 的定位） */
+    padding: 18px 140px 18px 20px;
     text-decoration: none;
     color: inherit;
     min-height: 44px;
@@ -146,6 +154,25 @@
     top: 10px;
     right: 8px;
   }
+  .list-btn {
+    position: absolute;
+    top: 12px;
+    right: 52px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 40px;
+    padding: 0 14px;
+    border: 2px solid var(--primary-soft-border);
+    border-radius: 999px;
+    color: var(--primary-dark);
+    font-size: 14px;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .list-btn:active {
+    background: var(--primary-soft);
+  }
   .pop-menu {
     position: absolute;
     top: 52px;
@@ -170,6 +197,14 @@
     color: var(--red);
     text-align: left;
     cursor: pointer;
+  }
+  /* 链接形态的菜单项（编辑）：中性色，垂直居中靠 flex 而非行高 */
+  .menu-link {
+    display: flex;
+    align-items: center;
+    color: var(--text);
+    text-decoration: none;
+    box-sizing: border-box;
   }
   .menu-item:active {
     background: var(--track);

@@ -247,3 +247,68 @@ func TestGroupCRUDAndPurge(t *testing.T) {
 		t.Errorf("path traversal not blocked: %v", err)
 	}
 }
+
+func TestUpdateGroup(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g1, err := s.CreateGroup("原名", []string{"cat", "dog", "sun"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// dog 同时被另一组引用，编辑移除后必须幸免于清理
+	if _, err := s.CreateGroup("组二", []string{"dog"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"cat", "dog", "sun"} {
+		if err := s.WriteAudio(Slug(w), AudioWord, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 改名 + 改词表：移除 dog、sun，修正 cat → car，新增 fish
+	got, err := s.UpdateGroup(g1.ID, "新名", []string{"car", "fish"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "新名" || got.ID != g1.ID {
+		t.Errorf("update result mismatch: %+v", got)
+	}
+	back, err := s.GetGroup(g1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Name != "新名" || len(back.Words) != 2 || back.Words[0] != "car" || back.Words[1] != "fish" {
+		t.Errorf("group after update = %+v", back)
+	}
+	if !back.CreatedAt.Equal(g1.CreatedAt) {
+		t.Errorf("CreatedAt changed on update: %v → %v", g1.CreatedAt, back.CreatedAt)
+	}
+	// cat、sun 已无人引用应被清理；dog 仍被组二引用必须保留
+	if s.HasAudio(Slug("cat"), AudioWord) {
+		t.Error("cat should be purged after removal")
+	}
+	if s.HasAudio(Slug("sun"), AudioWord) {
+		t.Error("sun should be purged after removal")
+	}
+	if !s.HasAudio(Slug("dog"), AudioWord) {
+		t.Error("dog still referenced by another group, must survive")
+	}
+
+	// 空白名保留原名，词表顺序即传入顺序
+	back, err = s.UpdateGroup(g1.ID, "  ", []string{"fish", "car"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Name != "新名" {
+		t.Errorf("blank name should keep old name, got %q", back.Name)
+	}
+	if back.Words[0] != "fish" || back.Words[1] != "car" {
+		t.Errorf("word order not preserved: %v", back.Words)
+	}
+
+	if _, err := s.UpdateGroup("19990101-000000", "x", []string{"cat"}); !os.IsNotExist(err) {
+		t.Errorf("updating missing group should be not-exist, got %v", err)
+	}
+}

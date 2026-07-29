@@ -1,6 +1,6 @@
 # AGENTS.md — 给 AI agent 的项目指南
 
-PhonicsFun 是教小孩英语自然拼读的自托管 web 应用：家长录入单词（粘贴文本/拍照，AI 提取），AI 生成单词卡全部内容（中英释义、IPA、字素-音素拆解、整词发音音频、逐音素拼读音频），按"一次导入 = 一组"组织，学习时组内循环翻卡。Go 单二进制 + 纯文件存储 + 内嵌 Svelte 5 前端，部署目标是资源拮据的软路由。产品需求原文见 `IDEA.md`，面向人类的说明见 `README.md`。
+PhonicsFun 是教小孩英语自然拼读的自托管 web 应用：家长录入单词（粘贴文本/拍照，AI 提取），AI 生成单词卡全部内容（中英释义、IPA、字素-音素拆解、整词发音音频、逐音素拼读音频），按"一次导入 = 一组"组织，学习时组内循环翻卡；组内单词可在列表页修改/增删/拖拽调序，改动的词自动重新生成。Go 单二进制 + 纯文件存储 + 内嵌 Svelte 5 前端，部署目标是资源拮据的软路由。产品需求原文见 `IDEA.md`，面向人类的说明见 `README.md`。
 
 ## 常用命令
 
@@ -66,6 +66,7 @@ web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也�
 | `POST /api/groups` | `{name?, words:[]}` → `{id}`；创建即全量入队 |
 | `GET /api/groups` | `[{id,name,createdAt,total,ready}]` |
 | `GET /api/groups/{id}` | `{..., words:[{word,slug,text,audio,audioVersion?,error?}]}`，状态值 `pending/running/done/failed`，前端轮询；`audioVersion` 是音频产物 mtime，前端音频/cues URL 的 `?v=` 防缓存参数（audio-only 重生成时 card 的 generated_at 不变，不能用它） |
+| `PUT /api/groups/{id}` | `{name?, words:[]}` → `{id}`；全量替换组名与词表（顺序即翻卡顺序），词表全量重新入队（缺产物的自动生成），被移除且不再被任何组引用的词连带删除产物 |
 | `DELETE /api/groups/{id}` | `?purge=1` 连带删除无其他组引用的词目录 |
 | `GET /api/words/{slug}` | card.json（v2：schema/senses/examples/syllables） |
 | `GET /api/words/{slug}/audio/{word\|blend}.wav` | 音频，支持 Range（iOS Safari 必需） |

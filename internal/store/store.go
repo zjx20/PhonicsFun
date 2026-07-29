@@ -421,6 +421,34 @@ func (s *Store) ListGroups() ([]*Group, error) {
 	return groups, nil
 }
 
+// UpdateGroup 全量替换组的名称与词表（编辑保存）。name 为空白时保留原名；
+// words 的顺序即学习时的翻卡顺序。被移除的词若不再被任何组引用，连带删除
+// 其产物目录——修错词不留垃圾；代价是误删单词再加回时需重新生成一次。
+func (s *Store) UpdateGroup(id, name string, words []string) (*Group, error) {
+	g, err := s.GetGroup(id)
+	if err != nil {
+		return nil, err
+	}
+	oldWords := g.Words
+	if name = strings.TrimSpace(name); name != "" {
+		g.Name = name
+	}
+	g.Words = words
+	data, err := json.MarshalIndent(g, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(s.groupPath(id), data); err != nil {
+		return nil, err
+	}
+	// 清理必须在新词表落盘之后：purgeUnreferenced 重新扫描全部组，本组
+	// 仍保留的词会被新词表引用而幸免，因此直接传旧词表即可。
+	if err := s.purgeUnreferenced(oldWords); err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
 // DeleteGroup 删除组；purge 时连带删除不再被任何其他组引用的单词目录。
 func (s *Store) DeleteGroup(id string, purge bool) error {
 	g, err := s.GetGroup(id)
@@ -433,17 +461,26 @@ func (s *Store) DeleteGroup(id string, purge bool) error {
 	if !purge {
 		return nil
 	}
-	others, err := s.ListGroups()
+	return s.purgeUnreferenced(g.Words)
+}
+
+// purgeUnreferenced 删除给定单词中不再被任何组引用的词目录（按 slug 判定，
+// 以磁盘上当前的组文件为准，调用方需先完成组文件的删除/改写）。清理是
+// best-effort：若某词恰在 pipeline 生成中，worker 的原子写会重建目录、留下
+// 一个孤儿但完整的产物目录——无害（同词再导入时还能复用），故这里不查
+// 生成状态。
+func (s *Store) purgeUnreferenced(words []string) error {
+	groups, err := s.ListGroups()
 	if err != nil {
 		return err
 	}
 	referenced := map[string]bool{}
-	for _, o := range others {
-		for _, w := range o.Words {
+	for _, g := range groups {
+		for _, w := range g.Words {
 			referenced[Slug(w)] = true
 		}
 	}
-	for _, w := range g.Words {
+	for _, w := range words {
 		slug := Slug(w)
 		if slug != "" && !referenced[slug] {
 			if err := os.RemoveAll(s.wordDir(slug)); err != nil {

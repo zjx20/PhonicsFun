@@ -5,6 +5,10 @@
 // 契约一览：
 //   POST   /api/extract                                {text} 或 multipart image → {words:[...]}
 //   POST   /api/groups                                 {name?, words:[]} → {id}
+//   PUT    /api/groups/{id}                            {name?, words:[]} → {id}；全量替换组名与
+//                                                        词表（顺序即翻卡顺序），缺产物的词自动
+//                                                        入队生成，被移除且不再被任何组引用的词
+//                                                        连带删除产物
 //   GET    /api/groups                                 [{id,name,createdAt,total,ready}]
 //   GET    /api/groups/{id}                            {..., words:[{word,slug,text,audio,
 //                                                        audioVersion?,error?}]}；audioVersion 是
@@ -75,6 +79,15 @@ export function extractFromImage(blob, signal) {
 export function createGroup({ name, words }) {
   return request('/api/groups', {
     method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name, words }),
+  });
+}
+
+/** PUT /api/groups/{id}：全量替换组名与词表（编辑保存）→ {id} */
+export function updateGroup(id, { name, words }) {
+  return request(`/api/groups/${encodeURIComponent(id)}`, {
+    method: 'PUT',
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, words }),
   });

@@ -35,6 +35,7 @@ func New(st *store.Store, p *pipeline.Pipeline, l *llm.Client, dist fs.FS) *Serv
 	s.mux.HandleFunc("POST /api/groups", s.handleCreateGroup)
 	s.mux.HandleFunc("GET /api/groups", s.handleListGroups)
 	s.mux.HandleFunc("GET /api/groups/{id}", s.handleGetGroup)
+	s.mux.HandleFunc("PUT /api/groups/{id}", s.handleUpdateGroup)
 	s.mux.HandleFunc("DELETE /api/groups/{id}", s.handleDeleteGroup)
 	s.mux.HandleFunc("GET /api/words/{slug}", s.handleGetCard)
 	s.mux.HandleFunc("GET /api/words/{slug}/audio/{file}", s.handleAudio)
@@ -156,6 +157,36 @@ func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 		"id": g.ID, "name": g.Name, "createdAt": g.CreatedAt,
 		"words": s.pipe.GroupStatus(g),
 	})
+}
+
+// handleUpdateGroup 全量替换组的名称与词表（编辑保存）。成功后把新词表
+// 全量入队：缺产物的词（新增/改拼写）自动生成，已完成的词被 worker 秒过，
+// 顺带补齐历史缺口。被移除的词的产物清理在 store.UpdateGroup 内完成。
+func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name  string   `json:"name"`
+		Words []string `json:"words"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "请求体解析失败")
+		return
+	}
+	words := dedupeWords(body.Words)
+	if len(words) == 0 {
+		httpError(w, http.StatusBadRequest, "单词列表为空")
+		return
+	}
+	g, err := s.store.UpdateGroup(r.PathValue("id"), body.Name, words)
+	if err != nil {
+		if os.IsNotExist(err) {
+			httpError(w, http.StatusNotFound, "组不存在")
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.pipe.EnqueueWords(words)
+	writeJSON(w, http.StatusOK, map[string]string{"id": g.ID})
 }
 
 func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
