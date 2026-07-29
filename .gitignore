@@ -6,3 +6,4 @@ spike-out/
 .secrets
 web/dist/*
 !web/dist/.gitkeep
+.env

@@ -1,0 +1,29 @@
+# PhonicsFun docker compose 部署
+#
+# 用法：
+#   1. 在本文件同目录创建 .env（已 gitignore，别提交）：
+#        GEMINI_API_KEY=你的key
+#        HTTPS_PROXY=http://host.docker.internal:7890   # 代理跑在宿主机时这样写
+#   2. docker compose up -d --build
+#
+# 数据落在 ./data（与裸跑二进制同一布局），备份/迁移拷贝该目录即可。
+
+services:
+  phonicsfun:
+    build: .
+    image: phonicsfun
+    container_name: phonicsfun
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # 必填：AI Studio API key。缺失时 compose 启动即报错，而不是容器起来再崩。
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?请在 .env 或环境变量里设置 GEMINI_API_KEY}
+      # 访问 Gemini 的代理（REST 与 Live WebSocket 均经 Go 标准库透传）。
+      # 容器里的 127.0.0.1 不是宿主机——代理跑在宿主机时要用
+      # host.docker.internal（下方 extra_hosts 已把它映射到宿主机网关）。
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/data

@@ -39,6 +39,24 @@ GEMINI_API_KEY=xxx ./bin/phonicsfun
 
 部署到软路由：`deploy/phonicsfun.service`（systemd）或 `deploy/phonicsfun.init`（OpenWrt procd），说明见文件头注释。
 
+容器部署：`docker compose up -d --build`（`Dockerfile` 多阶段构建，前端在镜像内现场编译）。
+API key 与代理写在 compose 同目录的 `.env`（已 gitignore）里注入，数据落在 `./data`，
+详见 `docker-compose.yml` 头部注释。
+
+在开发机替软路由构建多架构镜像（编译阶段全部跑在构建机原生架构上，
+最终阶段只有 COPY 层，因此跨架构构建**不需要** QEMU/binfmt）：
+
+```sh
+# 单架构：本机出 arm64 镜像，无 registry 时经 save/load 拷给软路由
+docker buildx build --platform linux/arm64 -t phonicsfun --load .
+docker save phonicsfun | ssh <路由器> docker load
+
+# 多架构 manifest：一次出 amd64+arm64，推送到自己的 registry
+# （经典镜像存储的 --load 装不下多架构清单，须 --push，
+#   或在 Docker 设置里启用 containerd image store 后才能 --load）
+docker buildx build --platform linux/amd64,linux/arm64 -t <registry>/phonicsfun --push .
+```
+
 ## 数据布局
 
 生成状态不落盘，**产物文件的存在性即完成态**——`card.json` 在即文本完成，两个 WAV 在即音频完成；重启后自动扫描补齐缺口，所有写入都是原子的（temp+fsync+rename）：

@@ -1,0 +1,15 @@
+# 与 .gitignore 同源的排除项，外加 docker 自身文件。
+# web/dist 也排除：镜像内的前端产物一律由 Dockerfile 的 node 阶段现场构建，
+# 不吃本地可能过期的 dist。
+.git
+data/
+bin/
+spike-out/
+**/*.wav
+.secrets
+.env
+web/node_modules/
+web/dist/
+Dockerfile
+docker-compose.yml
+.dockerignore
