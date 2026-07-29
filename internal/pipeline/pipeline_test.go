@@ -93,12 +93,12 @@ func (s *fakeSession) Speak(_ context.Context, script string) ([]byte, error) {
 	s.llm.mu.Lock()
 	s.llm.speakPerSess[s.idx]++
 	s.llm.mu.Unlock()
-	// blend 主体轮脚本的条目行以 `- "` 开头；按条目数返回分段语音，
-	// tail/word 轮返回一段连续语音
+	// blend 主体轮脚本的条目行以 `- "` 开头，按条目数返回分段语音；
+	// word 轮返回"慢速+常速"两段（脚本要求两遍之间停顿）
 	if n := strings.Count(script, `- "`); n > 0 {
 		return fakeSpeech(n), nil
 	}
-	return fakeTone(time.Second), nil
+	return fakeSpeech(2), nil
 }
 func (s *fakeSession) WordDone()           { s.words++ }
 func (s *fakeSession) NeedsRotation() bool { return s.words >= 2 } // 测试用小批量
@@ -159,15 +159,17 @@ func TestEndToEndGeneration(t *testing.T) {
 	if f.sessions < 3 {
 		t.Errorf("sessions = %d, 轮换未生效", f.sessions)
 	}
-	// 每会话 speak 次数 = 词数×3（blend 主体、blend 收尾、整词），不超过 6
+	// 每会话 speak 次数 = 词数×2（整词、blend 主体；收尾段本地拼装不占轮次），
+	// 不超过 4
 	for i, n := range f.speakPerSess {
-		if n > 6 {
+		if n > 4 {
 			t.Errorf("会话 %d speak %d 次，超过每会话 2 词上限", i, n)
 		}
 	}
 
 	// cues 与 blend.wav 成对生成，且时间轴由重组构造：单音节 cat →
-	// 3 个 chunk 段 + 1 个 tail 段，起止单调递增、段间有插入的静音间隔
+	// 3 个 chunk 段 + 1 个 tail 段 + tail 内的 word 子区间，
+	// 起止单调递增、段间有插入的静音间隔（word 与 tail 重叠，不参与间隔校验）
 	data, err := os.ReadFile(st.CuesPath(store.Slug("cat")))
 	if err != nil {
 		t.Fatalf("cues 未落盘: %v", err)
@@ -176,10 +178,10 @@ func TestEndToEndGeneration(t *testing.T) {
 	if err := json.Unmarshal(data, &cues); err != nil {
 		t.Fatal(err)
 	}
-	if cues.SampleRate != llm.LiveSampleRate || len(cues.Cues) != 4 {
+	if cues.SampleRate != llm.LiveSampleRate || len(cues.Cues) != 5 {
 		t.Fatalf("cues 结构错误: %+v", cues)
 	}
-	wantKinds := []string{"chunk", "chunk", "chunk", "tail"}
+	wantKinds := []string{"chunk", "chunk", "chunk", "tail", "word"}
 	for i, c := range cues.Cues {
 		if c.Kind != wantKinds[i] {
 			t.Errorf("cue %d kind = %s, want %s", i, c.Kind, wantKinds[i])
@@ -187,12 +189,16 @@ func TestEndToEndGeneration(t *testing.T) {
 		if c.EndMS <= c.StartMS {
 			t.Errorf("cue %d 起止非法: %+v", i, c)
 		}
-		if i > 0 && c.StartMS < cues.Cues[i-1].EndMS+200 {
+		if i > 0 && c.Kind != "word" && c.StartMS < cues.Cues[i-1].EndMS+200 {
 			t.Errorf("cue %d 与前段间隔不足（重组静音缺失）: %+v", i, cues.Cues)
 		}
 	}
 	if cues.Cues[0].Chunk != 0 || cues.Cues[2].Chunk != 2 || cues.Cues[3].Chunk != -1 {
 		t.Errorf("cue 下标错误: %+v", cues.Cues)
+	}
+	// 单音节词收尾无串读：word 子区间就是整个 tail 段
+	if w, tl := cues.Cues[4], cues.Cues[3]; w.StartMS != tl.StartMS || w.EndMS != tl.EndMS {
+		t.Errorf("单音节 word 子区间应与 tail 重合: %+v vs %+v", w, tl)
 	}
 }
 
@@ -211,8 +217,7 @@ func (s *scriptedSession) WordDone()           {}
 func (s *scriptedSession) NeedsRotation() bool { return false }
 func (s *scriptedSession) Close() error        { return nil }
 
-// twoSylCard: ac + tion，body 条目 = a、c、ak(音节)、shun(单 chunk 音节) 共 4 段，
-// tail 轮 = 2 音节 + 整词共 3 段。
+// twoSylCard: ac + tion，body 条目 = a、c、ak(音节)、shun(单 chunk 音节) 共 4 段。
 func twoSylCard() *store.Card {
 	return &store.Card{
 		Schema: store.CardSchemaVersion, Word: "action",
@@ -228,38 +233,63 @@ func twoSylCard() *store.Card {
 	}
 }
 
-func TestBlendAudioTailCompaction(t *testing.T) {
-	sess := &scriptedSession{outs: [][]byte{fakeSpeech(4), fakeSpeech(3)}}
-	_, cues, err := BlendAudio(context.Background(), sess, twoSylCard())
+func TestBlendAudioTailAssembly(t *testing.T) {
+	// 只有主体轮一次 Speak；收尾段由主体轮的两个音节段（快放）+ 传入的
+	// 整词常速遍本地拼装
+	sess := &scriptedSession{outs: [][]byte{fakeSpeech(4)}}
+	slow, natural := fakeTone(900*time.Millisecond), fakeTone(600*time.Millisecond)
+	_, cues, err := BlendAudio(context.Background(), sess, twoSylCard(), slow, natural)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// cues：chunk a、chunk c、syllable ac、(chunk+syllable) tion、tail
+	if sess.i != 1 {
+		t.Errorf("Speak %d 次，收尾段不应再单独朗读", sess.i)
+	}
+	// cues：chunk a、chunk c、syllable ac、(chunk+syllable) tion、tail、word
 	kinds := []string{}
 	for _, c := range cues.Cues {
 		kinds = append(kinds, c.Kind)
 	}
-	want := []string{"chunk", "chunk", "syllable", "chunk", "syllable", "tail"}
+	want := []string{"chunk", "chunk", "syllable", "chunk", "syllable", "tail", "word"}
 	if strings.Join(kinds, ",") != strings.Join(want, ",") {
 		t.Fatalf("cues kinds = %v", kinds)
 	}
-	tail := cues.Cues[len(cues.Cues)-1]
+	tail := cues.Cues[len(cues.Cues)-2]
 	tailDur := tail.EndMS - tail.StartMS
-	// 原始 tail：3×400ms 语音 + 2×700ms 停顿 ≈ 2600ms；紧凑化后音节快放
-	// （1.15×）+ 120/400ms 间隔应明显更短
-	if tailDur >= 2400 || tailDur < 800 {
-		t.Errorf("紧凑化后 tail 时长 = %dms，期望明显短于原始 ~2600ms", tailDur)
+	// 期望 ≈ 2×(400ms 音节段 + 分割 pad ≈ 520ms)÷1.15 + 120 + 400 + 600(常速遍)
+	// ≈ 2020ms；给分割 pad 留浮动余量
+	if tailDur < 1700 || tailDur > 2400 {
+		t.Errorf("拼装后 tail 时长 = %dms，期望约 2000ms", tailDur)
+	}
+	// word 子区间 = tail 里最后的整词常速遍：起点在串读之后、终点与 tail 一致
+	word := cues.Cues[len(cues.Cues)-1]
+	if word.EndMS != tail.EndMS || word.StartMS <= tail.StartMS {
+		t.Errorf("word 子区间越界: word=%+v tail=%+v", word, tail)
+	}
+	if d := word.EndMS - word.StartMS; d < 550 || d > 650 {
+		t.Errorf("word 子区间时长 = %dms，应等于常速遍 600ms", d)
 	}
 
-	// tail 轮没有停顿（一整段连续语音）时退回整段修剪，不判失败
-	sess2 := &scriptedSession{outs: [][]byte{fakeSpeech(4), fakeTone(2 * time.Second)}}
-	_, cues2, err := BlendAudio(context.Background(), sess2, twoSylCard())
-	if err != nil {
-		t.Fatalf("tail 分不开应降级而不是失败: %v", err)
+	// 单音节词：无串读，收尾段就是慢速遍本身
+	single := &store.Card{
+		Word: "cat",
+		Syllables: []store.Syllable{{Text: "cat", Respell: "kat", Chunks: []store.Chunk{
+			{Grapheme: "c", Respell: "k", AnchorWord: "cat"},
+			{Grapheme: "a", Respell: "a", AnchorWord: "apple"},
+			{Grapheme: "t", Respell: "t", AnchorWord: "top"},
+		}}},
 	}
-	t2 := cues2.Cues[len(cues2.Cues)-1]
-	if d := t2.EndMS - t2.StartMS; d < 1800 || d > 2200 {
-		t.Errorf("降级 tail 时长 = %dms，应约等于原始 2000ms", d)
+	sess2 := &scriptedSession{outs: [][]byte{fakeSpeech(3)}}
+	_, cues2, err := BlendAudio(context.Background(), sess2, single, slow, natural)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t2 := cues2.Cues[len(cues2.Cues)-2]
+	if d := t2.EndMS - t2.StartMS; d < 850 || d > 950 {
+		t.Errorf("单音节 tail 时长 = %dms，应等于慢速遍 900ms", d)
+	}
+	if w2 := cues2.Cues[len(cues2.Cues)-1]; w2.Kind != "word" || w2.StartMS != t2.StartMS || w2.EndMS != t2.EndMS {
+		t.Errorf("单音节 word 子区间应与 tail 重合: %+v vs %+v", w2, t2)
 	}
 }
 
@@ -388,7 +418,7 @@ func TestRegenerateCascade(t *testing.T) {
 	if len(f.genCalls) != genBefore+1 {
 		t.Errorf("regenerate text 未触发文本生成")
 	}
-	if totalSpeaks(f) != speaksBefore+3 {
+	if totalSpeaks(f) != speaksBefore+2 {
 		t.Errorf("regenerate text 未级联音频重生: speaks %d → %d", speaksBefore, totalSpeaks(f))
 	}
 	f.mu.Unlock()
@@ -405,13 +435,78 @@ func TestRegenerateCascade(t *testing.T) {
 	if len(f.genCalls) != genBefore {
 		t.Errorf("regenerate audio 不应触发文本生成")
 	}
-	if totalSpeaks(f) != speaksBefore+3 {
+	if totalSpeaks(f) != speaksBefore+2 {
 		t.Errorf("regenerate audio 未重生音频")
 	}
 	f.mu.Unlock()
 
 	if err := p.Regenerate("cat", RegenTarget("bogus")); err == nil {
 		t.Error("未知 target 应报错")
+	}
+}
+
+// TestAudioVersionBumpsOnRegenerate：audioVersion 是前端音频/cues URL 的
+// 防缓存参数，audio-only 重生成（card.json 不动、generated_at 不变）后它
+// 必须变化，否则浏览器会继续播缓存里的旧音频。
+func TestAudioVersionBumpsOnRegenerate(t *testing.T) {
+	f := &fakeLLM{}
+	p, _ := newTestPipeline(t, f)
+	p.Start(context.Background())
+	defer p.Stop()
+
+	p.EnqueueWords([]string{"cat"})
+	waitFor(t, func() bool { return allDone(p, []string{"cat"}) })
+	v1 := p.Status("cat").AudioVersion
+	if v1 == 0 {
+		t.Fatal("音频就绪后 audioVersion 应非零")
+	}
+
+	time.Sleep(10 * time.Millisecond) // mtime 是毫秒级，确保重写后可分辨
+	if err := p.Regenerate("cat", RegenAudio); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return allDone(p, []string{"cat"}) })
+	if v2 := p.Status("cat").AudioVersion; v2 <= v1 {
+		t.Errorf("audio-only 重生成后 audioVersion 未变化: %d → %d", v1, v2)
+	}
+}
+
+// TestUnusableWordAudioRegenerated：存量 word.wav 是旧脚本产物（没有两遍
+// 之间的停顿，切不出慢速/常速）时，blend 生成应删掉它连同重新生成，最终
+// 落盘的 word.wav 必须能切出两遍。
+func TestUnusableWordAudioRegenerated(t *testing.T) {
+	f := &fakeLLM{}
+	p, st := newTestPipeline(t, f)
+
+	card, _ := f.GenerateCard(context.Background(), "cat")
+	if err := st.WriteCard(store.Slug("cat"), card); err != nil {
+		t.Fatal(err)
+	}
+	unusable := wav.Encode(fakeTone(2*time.Second), llm.LiveSampleRate)
+	if err := st.WriteAudio(store.Slug("cat"), store.AudioWord, unusable); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateGroup("g", []string{"cat"}); err != nil {
+		t.Fatal(err)
+	}
+
+	p.Start(context.Background())
+	defer p.Stop()
+	if err := p.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return allDone(p, []string{"cat"}) })
+
+	data, err := os.ReadFile(st.AudioPath(store.Slug("cat"), store.AudioWord))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcm, rate, err := wav.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wav.SplitBySilence(pcm, rate, 2); err != nil {
+		t.Errorf("重新生成的 word.wav 仍切不出两遍: %v", err)
 	}
 }
 

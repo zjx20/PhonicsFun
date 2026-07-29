@@ -159,11 +159,6 @@ func TestBuildBlendLinesMulti(t *testing.T) {
 	if strings.Contains(body, "tion") {
 		t.Error("body 脚本不应出现裸拼写 tion（模型会读错）")
 	}
-
-	tail := BlendTailScript(multiCard())
-	if !strings.Contains(tail, `"ak", "shun"`) || !strings.Contains(tail, `"action"`) {
-		t.Errorf("tail 脚本错误:\n%s", tail)
-	}
 }
 
 func TestBuildBlendLinesSingle(t *testing.T) {
@@ -186,16 +181,16 @@ func TestBuildBlendLinesSingle(t *testing.T) {
 			t.Errorf("单音节词不应有音节行: %+v", ln)
 		}
 	}
-	tail := BlendTailScript(card)
-	if !strings.Contains(tail, `"cake"`) || strings.Contains(tail, "syllable") {
-		t.Errorf("单音节 tail 脚本错误:\n%s", tail)
-	}
 }
 
 func TestBuildWordScript(t *testing.T) {
 	s := BuildWordScript("Word")
 	if !strings.Contains(s, `"word"`) {
 		t.Errorf("word script 应含小写单词: %s", s)
+	}
+	// blend 收尾段靠静音分割切出慢速/常速两遍，脚本必须明确要求两遍之间静音
+	if !strings.Contains(s, "silence") {
+		t.Errorf("word script 应要求两遍之间的明确静音: %s", s)
 	}
 }
 

@@ -142,7 +142,7 @@ type BlendKind string
 const (
 	BlendChunk    BlendKind = "chunk"    // 一个字素-音素块（spelling voice）
 	BlendSyllable BlendKind = "syllable" // 合成一个音节（真实读音）
-	BlendTail     BlendKind = "tail"     // 收尾：音节连读 + 整词
+	BlendTail     BlendKind = "tail"     // 收尾：音节串读 + 整词（本地拼装，无单独朗读轮）
 )
 
 // BlendLine 是拼读音频的一个朗读条目。Syllable/Chunk 是卡片里的下标
@@ -206,22 +206,9 @@ func BlendBodyScript(lines []BlendLine) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// BlendTailScript 拼装收尾轮脚本：多音节 = 逐音节连读再说整词；
-// 单音节 = 只说整词。
-func BlendTailScript(card *store.Card) string {
-	word := strings.ToLower(card.Word)
-	if len(card.Syllables) <= 1 {
-		return fmt.Sprintf("Say only this one word, slowly and clearly: %q. Say nothing else.", word)
-	}
-	quoted := make([]string, len(card.Syllables))
-	for i, s := range card.Syllables {
-		quoted[i] = fmt.Sprintf("%q", s.Respell)
-	}
-	return fmt.Sprintf("First say the syllables one by one with a short pause between them: %s. Then say the whole word once at natural speed: %q. Say nothing else.",
-		strings.Join(quoted, ", "), word)
-}
-
-// BuildWordScript 整词轮：慢速一遍 + 常速一遍，便于跟读。
+// BuildWordScript 整词轮：慢速一遍 + 常速一遍，便于跟读。两遍之间要求
+// 明确的整秒静音——blend 收尾段靠静音分割从 word.wav 里切出这两遍复用
+// （见 pipeline.BlendAudio），能否切开是 word 轮落盘前的硬校验。
 func BuildWordScript(word string) string {
-	return fmt.Sprintf("Say only this one word, twice: first slowly and clearly, then at natural speed: %q.", strings.ToLower(word))
+	return fmt.Sprintf("Say only this one word, twice: first slowly and clearly, then—after a full second of complete silence—once more at natural speed: %q.", strings.ToLower(word))
 }

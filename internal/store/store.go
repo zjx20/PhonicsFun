@@ -208,8 +208,10 @@ const (
 )
 
 // Cue 是 blend.wav 内一个分段的时间标注（相对文件起点的毫秒）。
-// Kind: "chunk" | "syllable" | "tail"；Syllable/Chunk 是卡片里的下标
-// （Chunk 含 silent 在内的音节内下标），不适用时为 -1。
+// Kind: "chunk" | "syllable" | "tail" | "word"；Syllable/Chunk 是卡片里的
+// 下标（Chunk 含 silent 在内的音节内下标），不适用时为 -1。
+// "word" 是 tail 段内整词部分的子区间（点大字区单独播一遍完整读音用），
+// 与 tail 重叠且总在 tail 之后——整段播放的命中逻辑靠这个顺序先取到 tail。
 type Cue struct {
 	Kind     string `json:"kind"`
 	Syllable int    `json:"syllable"`
@@ -277,6 +279,22 @@ func (s *Store) HasCard(slug string) bool {
 func (s *Store) HasAudio(slug string, kind AudioKind) bool {
 	_, err := os.Stat(s.AudioPath(slug, kind))
 	return err == nil
+}
+
+// AudioVersion 返回音频产物的缓存版本号：word.wav 与 blend.wav 的最新
+// mtime（UnixMilli），无音频时为 0。前端把它拼进音频/cues URL 的 ?v= 参数：
+// 音频重新生成必然重写文件、版本必变，浏览器缓存随之失效。文本的
+// generated_at 不能用作这个版本——audio-only 重生成不动 card.json。
+func (s *Store) AudioVersion(slug string) int64 {
+	var v int64
+	for _, k := range []AudioKind{AudioWord, AudioBlend} {
+		if fi, err := os.Stat(s.AudioPath(slug, k)); err == nil {
+			if m := fi.ModTime().UnixMilli(); m > v {
+				v = m
+			}
+		}
+	}
+	return v
 }
 
 func (s *Store) ReadCard(slug string) (*Card, error) {

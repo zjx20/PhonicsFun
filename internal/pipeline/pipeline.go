@@ -9,8 +9,10 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -33,7 +35,10 @@ type WordStatus struct {
 	Slug  string `json:"slug"`
 	Text  State  `json:"text"`
 	Audio State  `json:"audio"`
-	Error string `json:"error,omitempty"`
+	// AudioVersion 是音频产物的缓存版本（store.AudioVersion），仅 audio
+	// 为 done 时非零。前端音频/cues URL 以它做 ?v= 参数防缓存。
+	AudioVersion int64  `json:"audioVersion,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 // RegenTarget 是 regenerate 接口的粒度。
@@ -232,6 +237,9 @@ func (p *Pipeline) Status(word string) WordStatus {
 			ws.Audio = StatePending
 		}
 	}
+	if ws.Audio == StateDone {
+		ws.AudioVersion = p.store.AudioVersion(slug)
+	}
 	return ws
 }
 
@@ -394,20 +402,33 @@ func (p *Pipeline) audioWorker(ctx context.Context) {
 					continue
 				}
 			}
+			// word 轮在前：blend 的收尾整词段直接复用 word.wav 里的
+			// 慢速/常速遍，保证与"整词"按钮听到的同源
+			if needWord {
+				if lastErr = p.generateWord(ctx, sess, j, card); lastErr != nil {
+					log.Printf("[audio] %s word 生成失败（将重试）: %v", j.Word, lastErr)
+					closeSess()
+					continue
+				}
+				needWord = false
+			}
 			if needBlend {
 				if lastErr = p.generateBlend(ctx, sess, j, card); lastErr != nil {
+					if errors.Is(lastErr, errWordAudioUnusable) {
+						// 存量 word.wav 切不出两遍（旧脚本没有停顿指令）：
+						// 删掉重新生成——是素材问题，会话不用换
+						log.Printf("[audio] %s 的 word.wav 不可复用，删除后重新生成: %v", j.Word, lastErr)
+						if lastErr = p.store.DeleteAudio(j.Slug); lastErr != nil {
+							break
+						}
+						needWord = true
+						continue
+					}
 					log.Printf("[audio] %s blend 生成失败（将重试）: %v", j.Word, lastErr)
 					closeSess()
 					continue
 				}
 				needBlend = false
-			}
-			if needWord {
-				if lastErr = p.speakTo(ctx, sess, j, store.AudioWord, llm.BuildWordScript(card.Word), 500*time.Millisecond); lastErr != nil {
-					closeSess()
-					continue
-				}
-				needWord = false
 			}
 			sess.WordDone()
 			ok = true
@@ -427,15 +448,46 @@ func (p *Pipeline) audioWorker(ctx context.Context) {
 	}
 }
 
-func (p *Pipeline) speakTo(ctx context.Context, sess AudioSession, j job, kind store.AudioKind, script string, minDur time.Duration) error {
-	pcm, err := sess.Speak(ctx, script)
+// generateWord 整词轮：慢速 + 常速两遍，脚本要求两遍之间整秒静音。
+// 落盘前硬校验能按静音切成两段——blend 收尾段依赖从 word.wav 里切出
+// 这两遍复用，写盘时切不开的音频等于埋雷，直接判本轮失败重试。
+func (p *Pipeline) generateWord(ctx context.Context, sess AudioSession, j job, card *store.Card) error {
+	pcm, err := sess.Speak(ctx, llm.BuildWordScript(card.Word))
 	if err != nil {
 		return err
 	}
-	if dur := wav.Duration(len(pcm), llm.LiveSampleRate); dur < minDur {
-		return fmt.Errorf("%s 音频过短（%s < %s），疑似生成失败", kind, dur.Round(time.Millisecond), minDur)
+	if dur := wav.Duration(len(pcm), llm.LiveSampleRate); dur < 500*time.Millisecond {
+		return fmt.Errorf("word 音频过短（%s），疑似生成失败", dur.Round(time.Millisecond))
 	}
-	return p.store.WriteAudio(j.Slug, kind, wav.Encode(pcm, llm.LiveSampleRate))
+	if _, err := wav.SplitBySilence(pcm, llm.LiveSampleRate, 2); err != nil {
+		return fmt.Errorf("word 音频切不出慢速/常速两遍（blend 收尾依赖）: %w", err)
+	}
+	return p.store.WriteAudio(j.Slug, store.AudioWord, wav.Encode(pcm, llm.LiveSampleRate))
+}
+
+// errWordAudioUnusable 标记 word.wav 无法当作 blend 收尾段的素材
+// （读不出/采样率不符/切不出两遍）。调用方删掉它重新生成，而不是重试 blend。
+var errWordAudioUnusable = errors.New("word.wav 不可复用")
+
+// wordTailSegments 从落盘的 word.wav 切出慢速遍与常速遍。blend 收尾段的
+// 整词音频从这里来——与"整词"按钮播放的是同一份录音，听感同源。
+func (p *Pipeline) wordTailSegments(slug string) (slow, natural []byte, err error) {
+	data, err := os.ReadFile(p.store.AudioPath(slug, store.AudioWord))
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errWordAudioUnusable, err)
+	}
+	pcm, rate, err := wav.Decode(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errWordAudioUnusable, err)
+	}
+	if rate != llm.LiveSampleRate {
+		return nil, nil, fmt.Errorf("%w: 采样率 %d ≠ %d", errWordAudioUnusable, rate, llm.LiveSampleRate)
+	}
+	segs, err := wav.SplitBySilence(pcm, rate, 2)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errWordAudioUnusable, err)
+	}
+	return segs[0], segs[1], nil
 }
 
 // blend 重组时插入的固定静音——拼读节奏由这些常量决定，而不是求模型
@@ -446,7 +498,7 @@ const (
 	gapBeforeTail    = 800 * time.Millisecond // 进入"连读+整词"前
 )
 
-// 收尾轮（音节串读 + 整词）的紧凑化参数："拼音串读"的感觉——音节快放、
+// 收尾段（音节串读 + 整词）的紧凑化参数："拼音串读"的感觉——音节快放、
 // 间隔极短，最后自然语速出整词。
 const (
 	tailSylGap   = 120 * time.Millisecond // 串读音节之间
@@ -454,32 +506,23 @@ const (
 	tailSylSpeed = 1.15                   // 串读音节的快放倍率（整词不加速）
 )
 
-// compactTail 把收尾轮压缩紧凑：按"音节数+1"二次分割，音节段快放、
-// 短间隔重排，整词段保持原速。分不出预期段数（模型串读时没停顿）就退回
-// 整段修剪——紧凑化是增强，不值得为它判整轮失败。
-func compactTail(tailPCM []byte, nSyl int) []byte {
-	if nSyl < 2 {
-		return wav.TrimSilence(tailPCM, llm.LiveSampleRate)
-	}
-	segs, err := wav.SplitBySilence(tailPCM, llm.LiveSampleRate, nSyl+1)
-	if err != nil {
-		return wav.TrimSilence(tailPCM, llm.LiveSampleRate)
+// assembleTail 本地拼装收尾段，不再让模型单独朗读一轮：串读音节直接复用
+// 主体轮切出的音节段（与点读同一份录音，只是快放），整词段来自 word.wav。
+// 单音节词没有串读，收尾就是整词段本身。wordOff 是整词部分在返回 PCM 内
+// 的字节偏移——cues 据此给整词部分单独标 "word" 段（点大字区播放用）。
+func assembleTail(sylSegs [][]byte, wordPCM []byte) (pcm []byte, wordOff int) {
+	if len(sylSegs) == 0 {
+		return wordPCM, 0
 	}
 	var out []byte
-	for i, s := range segs {
+	for i, s := range sylSegs {
 		if i > 0 {
-			gap := tailSylGap
-			if i == len(segs)-1 {
-				gap = tailWordGap
-			}
-			out = append(out, wav.Silence(gap, llm.LiveSampleRate)...)
+			out = append(out, wav.Silence(tailSylGap, llm.LiveSampleRate)...)
 		}
-		if i < len(segs)-1 {
-			s = wav.Speedup(s, tailSylSpeed)
-		}
-		out = append(out, s...)
+		out = append(out, wav.Speedup(s, tailSylSpeed)...)
 	}
-	return out
+	out = append(out, wav.Silence(tailWordGap, llm.LiveSampleRate)...)
+	return append(out, wordPCM...), len(out)
 }
 
 // segDurBounds 是各类分段的时长上下限，越界视为该轮生成失败（模型没按
@@ -495,10 +538,15 @@ func segDurBounds(kind llm.BlendKind) (lo, hi time.Duration) {
 	}
 }
 
-// generateBlend 生成并落盘拼读音频与时间标注。写入顺序：先 cues 后 wav——
-// 完成态只看 wav，保证 wav 在则 cues 必在。
+// generateBlend 生成并落盘拼读音频与时间标注。整词段从已落盘的 word.wav
+// 切出（切不出返回 errWordAudioUnusable，调用方删掉 word.wav 重来）。
+// 写入顺序：先 cues 后 wav——完成态只看 wav，保证 wav 在则 cues 必在。
 func (p *Pipeline) generateBlend(ctx context.Context, sess AudioSession, j job, card *store.Card) error {
-	wavData, cues, err := BlendAudio(ctx, sess, card)
+	wordSlow, wordNatural, err := p.wordTailSegments(j.Slug)
+	if err != nil {
+		return err
+	}
+	wavData, cues, err := BlendAudio(ctx, sess, card, wordSlow, wordNatural)
 	if err != nil {
 		return err
 	}
@@ -509,10 +557,14 @@ func (p *Pipeline) generateBlend(ctx context.Context, sess AudioSession, j job, 
 }
 
 // BlendAudio 生成拼读音频（WAV 字节）与时间标注：主体轮连续朗读全部条目
-// → 按已知条目数做静音分割 → tail 轮单独朗读 → 修剪后按固定间隔重组。
+// → 按已知条目数做静音分割 → 收尾段本地拼装 → 修剪后按固定间隔重组。
+// 收尾段不再让模型单独朗读：串读音节复用主体轮的音节段（与点读同源），
+// 整词用调用方从 word.wav 切出的两遍——多音节词接常速遍（串读后自然收束），
+// 单音节词用慢速遍（chunk 拼完直接出清晰整词）。同一份录音三处复用，
+// 点读、拼读收尾、整词按钮的听感不会互相漂移。
 // cues 的毫秒偏移由重组过程直接构造（PCM 字节数 ÷ 采样字节率），零误差。
 // 导出给 cmd/spike 复用，保证验证程序走的是服务端同一条代码路径。
-func BlendAudio(ctx context.Context, sess AudioSession, card *store.Card) ([]byte, *store.Cues, error) {
+func BlendAudio(ctx context.Context, sess AudioSession, card *store.Card, wordSlow, wordNatural []byte) ([]byte, *store.Cues, error) {
 	lines := llm.BuildBlendLines(card)
 	body := lines[:len(lines)-1]
 
@@ -524,11 +576,18 @@ func BlendAudio(ctx context.Context, sess AudioSession, card *store.Card) ([]byt
 	if err != nil {
 		return nil, nil, fmt.Errorf("blend 主体轮%w", err)
 	}
-	tailPCM, err := sess.Speak(ctx, llm.BlendTailScript(card))
-	if err != nil {
-		return nil, nil, err
+	var sylSegs [][]byte
+	for i, ln := range body {
+		if ln.Kind == llm.BlendSyllable {
+			sylSegs = append(sylSegs, segs[i])
+		}
 	}
-	segs = append(segs, compactTail(tailPCM, len(card.Syllables)))
+	tailWord := wordNatural
+	if len(sylSegs) == 0 {
+		tailWord = wordSlow
+	}
+	tailPCM, tailWordOff := assembleTail(sylSegs, tailWord)
+	segs = append(segs, tailPCM)
 
 	for i, seg := range segs {
 		d := wav.Duration(len(seg), llm.LiveSampleRate)
@@ -569,6 +628,10 @@ func BlendAudio(ctx context.Context, sess AudioSession, card *store.Card) ([]byt
 			cues.Cues = append(cues.Cues, store.Cue{Kind: "syllable", Syllable: ln.Syllable, Chunk: -1, StartMS: start, EndMS: end})
 		default:
 			cues.Cues = append(cues.Cues, store.Cue{Kind: "tail", Syllable: -1, Chunk: -1, StartMS: start, EndMS: end})
+			// tail 段内的整词部分再标一个 "word" 子区间：点大字区单独播
+			// 一遍完整读音。必须排在 tail 之后（见 store.Cue 注释的顺序约定）
+			wordStart := start + int(wav.Duration(tailWordOff, llm.LiveSampleRate).Milliseconds())
+			cues.Cues = append(cues.Cues, store.Cue{Kind: "word", Syllable: -1, Chunk: -1, StartMS: wordStart, EndMS: end})
 		}
 	}
 	return wav.Encode(pcm, llm.LiveSampleRate), cues, nil

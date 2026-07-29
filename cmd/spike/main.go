@@ -1,6 +1,7 @@
 // spike 是 Live API 链路的独立验证程序（对应实现计划里的 M0）：
-// 建会话 → blend 两轮（连续朗读→静音分割→重组+时间标注）→ 整词轮，
-// 复用服务端同一套 llm/pipeline 包代码路径。
+// 建会话 → 整词轮（慢速+常速，切出两遍）→ blend 主体轮（连续朗读→静音
+// 分割→本地拼装收尾段→重组+时间标注），复用服务端同一套 llm/pipeline
+// 包代码路径。
 //
 // 用法：
 //
@@ -73,12 +74,32 @@ func main() {
 	defer sess.Close()
 	log.Printf("会话已建立 (%s)", time.Since(start).Round(time.Millisecond))
 
-	// blend：走 pipeline.BlendAudio 同一条路径；rec 把每轮原始 PCM 落盘
+	// word 轮在前：blend 收尾段要从中切出慢速/常速两遍复用
 	rec := &recordingSession{inner: sess, out: *out, slug: slug}
-	log.Printf("--- blend 主体轮脚本 ---\n%s", llm.BlendBodyScript(llm.BuildBlendLines(card)))
-	log.Printf("--- blend 收尾轮脚本 ---\n%s", llm.BlendTailScript(card))
+	log.Printf("--- word 轮脚本 ---\n%s", llm.BuildWordScript(card.Word))
 	start = time.Now()
-	wavData, cues, err := pipeline.BlendAudio(ctx, rec, card)
+	pcm, err := rec.Speak(ctx, llm.BuildWordScript(card.Word))
+	if err != nil {
+		log.Fatalf("Speak(word): %v", err)
+	}
+	wordSegs, err := wav.SplitBySilence(pcm, llm.LiveSampleRate, 2)
+	if err != nil {
+		log.Fatalf("word 音频切不出慢速/常速两遍: %v（原始音频已存 %s）", err, *out)
+	}
+	wordPath := filepath.Join(*out, slug+"-word.wav")
+	if err := os.WriteFile(wordPath, wav.Encode(pcm, llm.LiveSampleRate), 0o644); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("word: 音频时长 %s（慢速遍 %s / 常速遍 %s）, 耗时 %s → %s",
+		wav.Duration(len(pcm), llm.LiveSampleRate).Round(time.Millisecond),
+		wav.Duration(len(wordSegs[0]), llm.LiveSampleRate).Round(time.Millisecond),
+		wav.Duration(len(wordSegs[1]), llm.LiveSampleRate).Round(time.Millisecond),
+		time.Since(start).Round(time.Millisecond), wordPath)
+
+	// blend：走 pipeline.BlendAudio 同一条路径（收尾段本地拼装，无收尾轮）
+	log.Printf("--- blend 主体轮脚本 ---\n%s", llm.BlendBodyScript(llm.BuildBlendLines(card)))
+	start = time.Now()
+	wavData, cues, err := pipeline.BlendAudio(ctx, rec, card, wordSegs[0], wordSegs[1])
 	if err != nil {
 		log.Fatalf("BlendAudio: %v（原始音频已存 %s，可人耳排查停顿）", err, *out)
 	}
@@ -93,20 +114,6 @@ func main() {
 	}
 	log.Printf("blend 完成，耗时 %s → %s", time.Since(start).Round(time.Millisecond), blendPath)
 	log.Printf("cues（核对每段起止与听感是否一致）:\n%s", cuesJSON)
-
-	// word：整词轮（慢速+常速）
-	start = time.Now()
-	pcm, err := sess.Speak(ctx, llm.BuildWordScript(card.Word))
-	if err != nil {
-		log.Fatalf("Speak(word): %v", err)
-	}
-	wordPath := filepath.Join(*out, slug+"-word.wav")
-	if err := os.WriteFile(wordPath, wav.Encode(pcm, llm.LiveSampleRate), 0o644); err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("word: 音频时长 %s, 耗时 %s → %s",
-		wav.Duration(len(pcm), llm.LiveSampleRate).Round(time.Millisecond),
-		time.Since(start).Round(time.Millisecond), wordPath)
 
 	sess.WordDone()
 	log.Printf("完成。请人耳试听 %s 下的 WAV，重点确认 blend 的\"逐块拼→合音节→连读成词\"节奏。", *out)
