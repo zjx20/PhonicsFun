@@ -30,6 +30,29 @@ func TestEncodeHeader(t *testing.T) {
 	}
 }
 
+func TestDecodeRoundTrip(t *testing.T) {
+	pcm := make([]byte, 4800)
+	for i := range pcm {
+		pcm[i] = byte(i)
+	}
+	got, rate, err := Decode(Encode(pcm, 24000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rate != 24000 {
+		t.Errorf("rate = %d, want 24000", rate)
+	}
+	if string(got) != string(pcm) {
+		t.Error("PCM 回读不一致")
+	}
+
+	for _, bad := range [][]byte{nil, []byte("RIFF"), []byte("not a wav file, definitely not 44 bytes of header")} {
+		if _, _, err := Decode(bad); err == nil {
+			t.Errorf("Decode(%q) 应报错", bad)
+		}
+	}
+}
+
 func TestDuration(t *testing.T) {
 	if d := Duration(48000, 24000); d != time.Second {
 		t.Errorf("Duration(48000, 24000) = %v, want 1s", d)

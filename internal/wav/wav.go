@@ -3,6 +3,7 @@ package wav
 
 import (
 	"encoding/binary"
+	"errors"
 	"time"
 )
 
@@ -33,6 +34,27 @@ func Encode(pcm []byte, sampleRate int) []byte {
 	binary.LittleEndian.PutUint32(buf[40:44], uint32(len(pcm)))
 	copy(buf[44:], pcm)
 	return buf
+}
+
+// Decode 解出 Encode 产物里的 PCM 与采样率。只支持本包写出的固定布局
+// （44 字节头、16-bit 单声道 PCM、fmt 紧跟 data）——解码对象是自己落盘的
+// word.wav（blend 收尾段复用其整词音频），不是通用 WAV 解析器。
+func Decode(data []byte) (pcm []byte, sampleRate int, err error) {
+	if len(data) < 44 || string(data[0:4]) != "RIFF" || string(data[8:12]) != "WAVE" ||
+		string(data[12:16]) != "fmt " || string(data[36:40]) != "data" {
+		return nil, 0, errors.New("不是本应用写出的 WAV 布局")
+	}
+	if binary.LittleEndian.Uint16(data[20:22]) != 1 ||
+		binary.LittleEndian.Uint16(data[22:24]) != NumChannels ||
+		binary.LittleEndian.Uint16(data[34:36]) != BitsPerSample {
+		return nil, 0, errors.New("WAV 编码参数不是 16-bit 单声道 PCM")
+	}
+	rate := int(binary.LittleEndian.Uint32(data[24:28]))
+	n := int(binary.LittleEndian.Uint32(data[40:44]))
+	if n > len(data)-44 {
+		n = len(data) - 44
+	}
+	return data[44 : 44+n], rate, nil
 }
 
 // Duration returns the playback length of raw PCM of the given byte length.
