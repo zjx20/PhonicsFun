@@ -80,6 +80,9 @@ func TestCardValidate(t *testing.T) {
 	breakIt("空 syllables", func(c *Card) { c.Syllables = nil })
 	breakIt("音节没有 chunk", func(c *Card) { c.Syllables[1].Chunks = nil })
 	breakIt("非 silent chunk 缺 anchor_word", func(c *Card) { c.Syllables[0].Chunks[0].AnchorWord = "" })
+	// 把整音节读音塞给单个 chunk（replication 的 i 曾被生成为整音节的
+	// "luh"）；单 voiced chunk 音节两者相等合法，validCard 的 tion 已覆盖
+	breakIt("chunk respell 等于整音节 respell", func(c *Card) { c.Syllables[0].Chunks[0].Respell = "ak" })
 	breakIt("音节全 silent", func(c *Card) {
 		c.Syllables[1].Chunks[0].Silent = true
 		c.Syllables[1].Chunks[0].Respell = ""

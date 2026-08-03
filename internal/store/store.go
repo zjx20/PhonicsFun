@@ -27,7 +27,9 @@ const CardSchemaVersion = 2
 // Chunk 是音节内的一个字素-音素教学单位。硬不变量见 Card.Validate：
 // 一个音节内所有 chunk 的 Grapheme 依序拼接精确等于该音节的 Text；
 // silent chunk（如 magic-e 的哑音 e）的 Phoneme/Respell 为空字符串。
-// Respell 是 spelling voice——每个元音读本音、不弱读，供逐块拼读。
+// Respell 是 spelling voice——每个元音读本音、不弱读，供逐块拼读；只注
+// 该 chunk 自身的音，不含同音节其它字母的音（多 voiced chunk 音节里
+// 与 Syllable.Respell 相等即判违规）。
 type Chunk struct {
 	Grapheme   string `json:"grapheme"`
 	Phoneme    string `json:"phoneme"`
@@ -126,7 +128,7 @@ func (c *Card) Validate() error {
 			return fmt.Errorf("音节 %d (%q) 缺 respell", si, syl.Text)
 		}
 		var joined strings.Builder
-		hasVoiced := false
+		voiced := 0
 		for ci, ch := range syl.Chunks {
 			if ch.Grapheme == "" {
 				return fmt.Errorf("音节 %d (%q) 的 chunk %d 字素为空", si, syl.Text, ci)
@@ -135,7 +137,7 @@ func (c *Card) Validate() error {
 			if ch.Silent {
 				continue
 			}
-			hasVoiced = true
+			voiced++
 			if ch.Respell == "" || ch.AnchorWord == "" {
 				return fmt.Errorf("音节 %d 的 chunk %q 缺 respell 或 anchor_word", si, ch.Grapheme)
 			}
@@ -146,8 +148,19 @@ func (c *Card) Validate() error {
 		if joined.String() != syl.Text {
 			return fmt.Errorf("音节 %d 的 chunk 拼接 %q 与音节 %q 不一致", si, joined.String(), syl.Text)
 		}
-		if !hasVoiced {
+		if voiced == 0 {
 			return fmt.Errorf("音节 %d (%q) 全部 chunk 都是 silent", si, syl.Text)
+		}
+		// 多个发音 chunk 的音节里，单个 chunk 的注音不可能覆盖整个音节的
+		// 读音；相等只会是"把音节读音塞给了某个 chunk"（如 li 拆 l,i 后
+		// i 的 respell 写成 "luh"）——它会被逐块朗读，必须拦下。
+		// 单 voiced chunk 音节（如 tion）两者相等是正常的，不检查。
+		if voiced > 1 {
+			for _, ch := range syl.Chunks {
+				if !ch.Silent && strings.EqualFold(ch.Respell, syl.Respell) {
+					return fmt.Errorf("音节 %d (%q) 的 chunk %q 的 respell %q 与整个音节的 respell 相同——chunk.respell 只注该 chunk 自身的音", si, syl.Text, ch.Grapheme, ch.Respell)
+				}
+			}
 		}
 		if g := splitDigraph(syl.Chunks); g != "" {
 			return fmt.Errorf("音节 %d 内 digraph %q 被拆开——digraph 是一个音，必须作为整体 chunk", si, g)

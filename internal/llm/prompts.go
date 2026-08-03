@@ -14,7 +14,7 @@ import (
 // Clymer 1963 证伪的不可靠规则）、few-shot 示例。硬不变量与 store.Card.Validate
 // 一一对应：音节拼接==单词、音节内字素拼接==音节、digraph 不可拆、blend 必拆。
 const cardPromptHeader = `你是儿童自然拼读（phonics）教学内容生成器。给定一个英文单词，输出 JSON 单词卡：
-- ipa：美式发音 IPA，带斜杠和重音符。
+- ipa：美式发音 IPA，带斜杠和重音符。有 CMUdict 参照时以它为读音基准，但弱读音节的元音质量按教学词典（Longman/Cambridge 风格）取舍：拼写字母 i 的弱读通常是 /ɪ/ 而不是 /ə/（replication → /ˌrɛplɪˈkeɪʃən/——拼读教学要保留字母 i 与其读音的关联），-tion/-sion 与 -il/-ible 类仍是 /ə/。选定读音后 chunk 的 phoneme 与 respell 全部跟随它，不要混搭两派词典。
 - senses：按词性组织的释义，1~3 条。若下方给出权威词性参照，按参照顺序取儿童最常用的至多 3 个词性；pos 只能用 n. v. adj. adv. pron. prep. conj. int. num. art. 这些缩写；zh 是不超过 12 字的儿童友好中文释义；en 是不超过 10 个词的简单英文释义。
 - examples：1~2 条例句。英文句不超过 10 个词、只用小孩认识的简单词、必须包含这个单词或其自然变形；zh 是自然的中文翻译。
 - syllables：两级拼读拆解（音节 → 音节内字素-音素块），严格遵守下面的规则块；所有 text 和 grapheme 全小写。
@@ -61,11 +61,29 @@ letter is silent may be one chunk (the "st" in listen = /s/).
 
 STEP 4 - Respell（这是要喂给语音引擎朗读的，绝不能是 IPA）:
 - chunk.respell = SPELLING VOICE：该音单独、清晰、不弱读的儿童可读注音
-  （a→"a", i→"ih", tion→"shun", igh→"eye", k→"k"）。
-- syllable.respell = 该音节在整词里的真实读音，非重读音节要体现 schwa 弱读
-  （replication 的 li → "luh"，ca → "kay"）。
+  （a→"a", i→"ih", tion→"shun", igh→"eye", k→"k"）。只注这个 chunk 自己
+  的音，绝不能带上同音节其它字母的音（replication 的 li 拆成 l,i 后，
+  i 的 respell 是 "ih"，绝不是整个音节的读音）。
+- syllable.respell = 把"该音节内 chunk phoneme 依序拼出的读音"转写成注音，
+  非重读音节要体现 schwa 弱读。它必须与 phoneme 描述同一个音：chunks 是
+  /l/+/ɪ/ 就写 "lih"（"luh" 是 /lə/ 的拼法）；若该音节确实弱读成 /lə/，
+  则 chunk phoneme 与整词 ipa 对应位置也必须是 ə——ipa、phoneme、respell
+  三处永远描述同一个发音。
+- 元音转写表（phoneme ↔ respell 拼法一一对应，不得跨行混用。夹在辅音
+  之间时可用发音无歧义的自然英文拼法省写：/ʃən/→"shun"、/bɪg/→"big"、
+  /laɪt/→"lite"；音节末尾的元音不省，/lɪ/→"lih" 而不是 "li"）：
+  ə→uh  ɪ→ih  iː→ee  eɪ→ay  ɛ→eh  æ→a  ʌ→u  ɑ→ah  ɔ→aw  oʊ→oh
+  uː→oo  ʊ→uu  aɪ→eye  aʊ→ow  ɔɪ→oy  ər→er
 - anchor_word：一个常见简单词，其中同样的字素发同样的音（sh→shoe,
   igh→night, ar→car, tion→station）。
+
+STEP 5 - Consistency (hard rule). The whole card describes ONE pronunciation:
+concatenating the phoneme of every non-silent chunk in order (slashes removed)
+must reproduce the full ipa exactly, apart from stress marks (ˈ ˌ) and syllable
+dots. This includes weak syllables: if the ipa has ə in a position, the chunk
+there must say /ə/ (and its anchor_word must be a schwa word like pencil) —
+never /ɪ/ at that spot, and vice versa. Use one symbol set throughout; never
+mix dictionary styles between ipa and chunks.
 
 更多切分示例（音节用 - 分隔，音节内 chunk 用 , 分隔）：
 tiger → ti-ger：t,i - g,er（V/CV 开音节，i 读长音 /aɪ/）
@@ -121,7 +139,7 @@ func buildCardPrompt(word string, refs cardRefs, feedback string) string {
 // buildCardRetryPrompt 在首次生成校验失败后附加失败原因重试。
 func buildCardRetryPrompt(word string, refs cardRefs, feedback, problem string) string {
 	return buildCardPrompt(word, refs, feedback) +
-		fmt.Sprintf("\n\n注意：上一次生成失败，原因是「%s」。请检查：所有音节 text 依序拼接必须精确等于 %q；每个音节内 chunk 的 grapheme 依序拼接必须精确等于该音节的 text；digraph 不可拆开；blend 必须逐字母拆。", problem, strings.ToLower(word))
+		fmt.Sprintf("\n\n注意：上一次生成失败，原因是「%s」。请检查：所有音节 text 依序拼接必须精确等于 %q；每个音节内 chunk 的 grapheme 依序拼接必须精确等于该音节的 text；digraph 不可拆开；blend 必须逐字母拆；整词 ipa 与非 silent chunk 的 phoneme 依序拼接必须是同一读音、同一套符号（弱读元音 ə/ɪ 两处必须统一）；respell 的元音拼法必须转写对应 phoneme（ɪ→ih、ə→uh，不得互换）。", problem, strings.ToLower(word))
 }
 
 // --- 单词提取 ---

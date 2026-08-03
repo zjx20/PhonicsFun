@@ -186,6 +186,12 @@ func (c *Client) generateCardOnce(ctx context.Context, word, prompt string) (*st
 	if err := card.Validate(); err != nil {
 		return nil, &validationError{problem: err.Error()}
 	}
+	if err := checkIPAConsistency(&card); err != nil {
+		return nil, &validationError{problem: err.Error()}
+	}
+	if err := checkRespellConsistency(&card); err != nil {
+		return nil, &validationError{problem: err.Error()}
+	}
 	return &card, nil
 }
 
