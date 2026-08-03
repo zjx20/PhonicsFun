@@ -517,31 +517,24 @@ const (
 	gapBeforeTail    = 800 * time.Millisecond // 进入"连读+整词"前
 )
 
-// 收尾段（音节串读 + 整词）的紧凑化参数："拼音串读"的感觉——音节快放、
-// 间隔极短，最后自然语速出整词。
-const (
-	tailSylGap   = 120 * time.Millisecond // 串读音节之间
-	tailWordGap  = 400 * time.Millisecond // 串读结束到整词
-	tailSylSpeed = 1.15                   // 串读音节的快放倍率（整词不加速）
-)
+// 收尾段 = word.wav 的慢速遍 + 常速遍（单音节词只有慢速遍）。
+const tailWordGap = 400 * time.Millisecond // 慢速遍到常速整词之间
 
-// assembleTail 本地拼装收尾段，不再让模型单独朗读一轮：串读音节直接复用
-// 主体轮切出的音节段（与点读同一份录音，只是快放），整词段来自 word.wav。
-// 单音节词没有串读，收尾就是整词段本身。wordOff 是整词部分在返回 PCM 内
-// 的字节偏移——cues 据此给整词部分单独标 "word" 段（点大字区播放用）。
-func assembleTail(sylSegs [][]byte, wordPCM []byte) (pcm []byte, wordOff int) {
-	if len(sylSegs) == 0 {
-		return wordPCM, 0
+// assembleTail 本地拼装收尾段，不再让模型单独朗读一轮：素材全部取自
+// word.wav 切出的两遍。多音节词 = 慢速遍 + 常速遍——"音节串读"由慢速遍
+// 承担：它是模型对整词的自然慢读，音节清晰且衔接连贯；用快放拼接主体轮
+// 的孤立音节段会丢协同发音与连贯语调，听感机械、和整词读音脱节。单音节
+// 词没有串读，收尾就是慢速遍本身（chunk 拼完直接出清晰整词）。与"整词"
+// 按钮播放的是同一份录音，拼读收尾与整词的听感完全同源。wordOff 是常速
+// 整词在返回 PCM 内的字节偏移——cues 据此给整词部分单独标 "word" 段
+// （点大字区播放用）。
+func assembleTail(slow, natural []byte, multi bool) (pcm []byte, wordOff int) {
+	if !multi {
+		return slow, 0
 	}
-	var out []byte
-	for i, s := range sylSegs {
-		if i > 0 {
-			out = append(out, wav.Silence(tailSylGap, llm.LiveSampleRate)...)
-		}
-		out = append(out, wav.Speedup(s, tailSylSpeed)...)
-	}
+	out := append([]byte(nil), slow...)
 	out = append(out, wav.Silence(tailWordGap, llm.LiveSampleRate)...)
-	return append(out, wordPCM...), len(out)
+	return append(out, natural...), len(out)
 }
 
 // segDurBounds 是各类分段的时长上下限，越界视为该轮生成失败（模型没按
@@ -552,7 +545,7 @@ func segDurBounds(kind llm.BlendKind) (lo, hi time.Duration) {
 		return 150 * time.Millisecond, 5 * time.Second
 	case llm.BlendSyllable:
 		return 250 * time.Millisecond, 5 * time.Second
-	default: // tail：音节连读 + 整词，长词会比较长
+	default: // tail：慢速 + 常速两遍整词，长词会比较长
 		return 250 * time.Millisecond, 20 * time.Second
 	}
 }
@@ -577,10 +570,10 @@ func (p *Pipeline) generateBlend(ctx context.Context, sess AudioSession, j job, 
 
 // BlendAudio 生成拼读音频（WAV 字节）与时间标注：主体轮连续朗读全部条目
 // → 按已知条目数做静音分割 → 收尾段本地拼装 → 修剪后按固定间隔重组。
-// 收尾段不再让模型单独朗读：串读音节复用主体轮的音节段（与点读同源），
-// 整词用调用方从 word.wav 切出的两遍——多音节词接常速遍（串读后自然收束），
-// 单音节词用慢速遍（chunk 拼完直接出清晰整词）。同一份录音三处复用，
-// 点读、拼读收尾、整词按钮的听感不会互相漂移。
+// 收尾段不再让模型单独朗读，素材全部取自调用方从 word.wav 切出的两遍：
+// 多音节词 = 慢速遍（自然慢读承担音节串读）+ 常速遍，单音节词 = 慢速遍
+// （见 assembleTail）。同一份录音多处复用，拼读收尾、点大字区、整词按钮
+// 的听感不会互相漂移。
 // cues 的毫秒偏移由重组过程直接构造（PCM 字节数 ÷ 采样字节率），零误差。
 // 导出给 cmd/spike 复用，保证验证程序走的是服务端同一条代码路径。
 func BlendAudio(ctx context.Context, sess AudioSession, card *store.Card, wordSlow, wordNatural []byte) ([]byte, *store.Cues, error) {
@@ -595,17 +588,7 @@ func BlendAudio(ctx context.Context, sess AudioSession, card *store.Card, wordSl
 	if err != nil {
 		return nil, nil, fmt.Errorf("blend 主体轮%w", err)
 	}
-	var sylSegs [][]byte
-	for i, ln := range body {
-		if ln.Kind == llm.BlendSyllable {
-			sylSegs = append(sylSegs, segs[i])
-		}
-	}
-	tailWord := wordNatural
-	if len(sylSegs) == 0 {
-		tailWord = wordSlow
-	}
-	tailPCM, tailWordOff := assembleTail(sylSegs, tailWord)
+	tailPCM, tailWordOff := assembleTail(wordSlow, wordNatural, len(card.Syllables) > 1)
 	segs = append(segs, tailPCM)
 
 	for i, seg := range segs {

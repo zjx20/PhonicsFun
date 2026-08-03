@@ -236,8 +236,8 @@ func twoSylCard() *store.Card {
 }
 
 func TestBlendAudioTailAssembly(t *testing.T) {
-	// 只有主体轮一次 Speak；收尾段由主体轮的两个音节段（快放）+ 传入的
-	// 整词常速遍本地拼装
+	// 只有主体轮一次 Speak；收尾段由传入的 word.wav 两遍本地拼装：
+	// 慢速遍（承担音节串读）+ tailWordGap + 常速遍
 	sess := &scriptedSession{outs: [][]byte{fakeSpeech(4)}}
 	slow, natural := fakeTone(900*time.Millisecond), fakeTone(600*time.Millisecond)
 	_, cues, err := BlendAudio(context.Background(), sess, twoSylCard(), slow, natural)
@@ -258,18 +258,20 @@ func TestBlendAudioTailAssembly(t *testing.T) {
 	}
 	tail := cues.Cues[len(cues.Cues)-2]
 	tailDur := tail.EndMS - tail.StartMS
-	// 期望 ≈ 2×(400ms 音节段 + 分割 pad ≈ 520ms)÷1.15 + 120 + 400 + 600(常速遍)
-	// ≈ 2020ms；给分割 pad 留浮动余量
-	if tailDur < 1700 || tailDur > 2400 {
-		t.Errorf("拼装后 tail 时长 = %dms，期望约 2000ms", tailDur)
+	// 收尾段不经静音分割、无 pad：精确 = 900(慢速) + 400(gap) + 600(常速)
+	if tailDur < 1880 || tailDur > 1920 {
+		t.Errorf("拼装后 tail 时长 = %dms，期望 1900ms", tailDur)
 	}
-	// word 子区间 = tail 里最后的整词常速遍：起点在串读之后、终点与 tail 一致
+	// word 子区间 = tail 里最后的整词常速遍：起点在慢速遍+gap 之后、终点与 tail 一致
 	word := cues.Cues[len(cues.Cues)-1]
 	if word.EndMS != tail.EndMS || word.StartMS <= tail.StartMS {
 		t.Errorf("word 子区间越界: word=%+v tail=%+v", word, tail)
 	}
-	if d := word.EndMS - word.StartMS; d < 550 || d > 650 {
+	if d := word.EndMS - word.StartMS; d < 590 || d > 610 {
 		t.Errorf("word 子区间时长 = %dms，应等于常速遍 600ms", d)
+	}
+	if off := word.StartMS - tail.StartMS; off < 1290 || off > 1310 {
+		t.Errorf("word 子区间起点偏移 = %dms，应为慢速遍 900 + 间隔 400", off)
 	}
 
 	// 单音节词：无串读，收尾段就是慢速遍本身

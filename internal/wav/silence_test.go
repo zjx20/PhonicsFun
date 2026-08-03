@@ -94,31 +94,6 @@ func TestSplitBySilence(t *testing.T) {
 	}
 }
 
-func TestSpeedup(t *testing.T) {
-	src := tone(400*time.Millisecond, 16000)
-	factor := 1.15
-	out := Speedup(src, factor)
-	got := Duration(len(out), testRate)
-	want := time.Duration(float64(400*time.Millisecond) / factor)
-	if got < want-10*time.Millisecond || got > want+10*time.Millisecond {
-		t.Errorf("Speedup 后时长 = %s, want ≈%s", got, want)
-	}
-	if len(out)%2 != 0 {
-		t.Error("输出未对齐采样边界")
-	}
-	// factor ≤ 1 原样返回
-	if same := Speedup(src, 1.0); len(same) != len(src) {
-		t.Error("factor=1 应原样返回")
-	}
-	// 静音加速后仍是静音（幅度不放大）
-	quiet := Silence(200*time.Millisecond, testRate)
-	for i, b := range Speedup(quiet, 1.2) {
-		if b != 0 {
-			t.Fatalf("静音加速后 byte %d = %d", i, b)
-		}
-	}
-}
-
 func TestSplitBySilenceShortGaps(t *testing.T) {
 	// 间隙只有 300ms：保守参数（600ms 间隙）切不出 4 段，扫描应自动降到
 	// 更短的间隙参数命中

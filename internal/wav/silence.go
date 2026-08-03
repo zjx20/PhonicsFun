@@ -89,35 +89,6 @@ func Silence(d time.Duration, sampleRate int) []byte {
 	return make([]byte, n)
 }
 
-// Speedup 用线性插值重采样把 PCM 加速 factor 倍（时长 ÷ factor，音调随之
-// 略升——"快放"效果，用于拼读收尾的音节快读；1.15 倍约升高 2 个半音，
-// 对儿童应用是可接受甚至讨喜的）。factor ≤ 1 原样返回。
-func Speedup(pcm []byte, factor float64) []byte {
-	if factor <= 1 {
-		return pcm
-	}
-	n := len(pcm) / 2
-	m := int(float64(n) / factor)
-	if m < 1 {
-		return nil
-	}
-	out := make([]byte, m*2)
-	for i := 0; i < m; i++ {
-		pos := float64(i) * factor
-		j := int(pos)
-		frac := pos - float64(j)
-		s0 := int16(uint16(pcm[j*2]) | uint16(pcm[j*2+1])<<8)
-		s1 := s0
-		if j+1 < n {
-			s1 = int16(uint16(pcm[(j+1)*2]) | uint16(pcm[(j+1)*2+1])<<8)
-		}
-		v := int16(float64(s0)*(1-frac) + float64(s1)*frac)
-		out[i*2] = byte(uint16(v))
-		out[i*2+1] = byte(uint16(v) >> 8)
-	}
-	return out
-}
-
 // --- 内部 ---
 
 type frameRun struct{ start, end int } // 帧下标区间 [start, end)
