@@ -14,6 +14,7 @@
 // 暂停上行麦克风帧并发一次 {"type":"mic","on":false}，避免老师把卡片音频
 // 听成学生发音；本地播放结束后自动恢复。
 
+import { BASE } from './api.js';
 import { playback, stopPlayback } from './playback.svelte.js';
 import { playerState } from './player.svelte.js';
 import { toastError } from './toast.svelte.js';
@@ -149,8 +150,9 @@ async function setup(g) {
   micNode.connect(micMuteGain);
   micMuteGain.connect(ctx.destination);
 
+  // BASE 支持子路径反代部署（api.js 顶部注释），WS 地址与 REST 同前缀
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/api/teacher/live`);
+  ws = new WebSocket(`${proto}://${location.host}${BASE}api/teacher/live`);
   ws.binaryType = 'arraybuffer';
   ws.onmessage = (e) => {
     if (g === gen) onWsMessage(e);

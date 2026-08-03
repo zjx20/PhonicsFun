@@ -1,6 +1,10 @@
 // 后端 API 的 thin fetch 封装（后端 API 契约的唯一入口）。
-// 所有请求走相对路径 /api/...：dev 由 Vite 代理到 Go 后端（见 vite.config.js），
-// 生产构建被 Go go:embed 后与 API 同源，因此无需任何绝对地址。
+// 所有请求基于 BASE（SPA 入口所在路径）解析：dev 由 Vite 代理到 Go 后端
+// （见 vite.config.js），生产构建被 Go go:embed 后与 API 同源。BASE 在
+// 根部署时是 '/'，子路径反代（如 Caddy handle_path /phonicsfun/*）时是
+// '/phonicsfun/'——hash 路由保证 location.pathname 恒为入口路径，因此
+// 模块加载时算一次即可。反代必须把无尾斜杠的入口 301 到带尾斜杠
+// （/phonicsfun → /phonicsfun/），否则相对解析会丢前缀（见 README 部署节）。
 //
 // 契约一览：
 //   POST   /api/extract                                {text} 或 multipart image → {words:[...]}
@@ -34,6 +38,9 @@
 //   GET    /api/teacher/live                           WebSocket：AI 老师实时语音（帧协议见
 //                                                        lib/teacher.svelte.js 顶部注释，此文件
 //                                                        只管 REST）
+
+/** SPA 入口所在路径，恒以 '/' 结尾；teacher.svelte.js 拼 WS 地址也用它。 */
+export const BASE = new URL('.', location.href).pathname;
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -69,7 +76,7 @@ async function request(path, options = {}) {
 
 /** POST /api/extract：从纯文本提取单词 → {words: [...]} */
 export function extractFromText(text, signal) {
-  return request('/api/extract', {
+  return request(`${BASE}api/extract`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ text }),
@@ -81,12 +88,12 @@ export function extractFromText(text, signal) {
 export function extractFromImage(blob, signal) {
   const form = new FormData();
   form.append('image', blob, 'photo.jpg');
-  return request('/api/extract', { method: 'POST', body: form, signal });
+  return request(`${BASE}api/extract`, { method: 'POST', body: form, signal });
 }
 
 /** POST /api/groups → {id} */
 export function createGroup({ name, words }) {
-  return request('/api/groups', {
+  return request(`${BASE}api/groups`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, words }),
@@ -95,7 +102,7 @@ export function createGroup({ name, words }) {
 
 /** PUT /api/groups/{id}：全量替换组名与词表（编辑保存）→ {id} */
 export function updateGroup(id, { name, words }) {
-  return request(`/api/groups/${encodeURIComponent(id)}`, {
+  return request(`${BASE}api/groups/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, words }),
@@ -104,29 +111,29 @@ export function updateGroup(id, { name, words }) {
 
 /** GET /api/groups → [{id,name,createdAt,total,ready}] */
 export function listGroups() {
-  return request('/api/groups');
+  return request(`${BASE}api/groups`);
 }
 
 /** GET /api/groups/{id} → 组详情（含每个单词的 text/audio 状态） */
 export function getGroup(id) {
-  return request(`/api/groups/${encodeURIComponent(id)}`);
+  return request(`${BASE}api/groups/${encodeURIComponent(id)}`);
 }
 
 /** DELETE /api/groups/{id} → 204 */
 export function deleteGroup(id) {
-  return request(`/api/groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return request(`${BASE}api/groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 /** GET /api/words/{slug} → card.json（v2，结构见文件顶部契约一览） */
 export function getCard(slug) {
-  return request(`/api/words/${encodeURIComponent(slug)}`);
+  return request(`${BASE}api/words/${encodeURIComponent(slug)}`);
 }
 
 /**
  * blend 音频时间标注地址。version 传组详情里的 word.audioVersion，与音频同一套防缓存机制。
  */
 export function blendCuesUrl(slug, version) {
-  return `/api/words/${encodeURIComponent(slug)}/audio/blend.cues.json?v=${encodeURIComponent(version || '')}`;
+  return `${BASE}api/words/${encodeURIComponent(slug)}/audio/blend.cues.json?v=${encodeURIComponent(version || '')}`;
 }
 
 /**
@@ -151,7 +158,7 @@ export async function getBlendCues(slug, version) {
  * target=audio 时后端忽略它（音频脚本机械拼装，不接受自由文本）。
  */
 export function regenerateWord(slug, target, feedback = '') {
-  return request(`/api/words/${encodeURIComponent(slug)}/regenerate`, {
+  return request(`${BASE}api/words/${encodeURIComponent(slug)}/regenerate`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ target, feedback: feedback || undefined }),
@@ -160,7 +167,7 @@ export function regenerateWord(slug, target, feedback = '') {
 
 /** GET /api/settings → {teacherPrompt, teacherVoice, teacherVadPrefixMs, teacherVadSilenceMs} */
 export function getSettings() {
-  return request('/api/settings');
+  return request(`${BASE}api/settings`);
 }
 
 /**
@@ -168,7 +175,7 @@ export function getSettings() {
  * 改动下次开启老师时生效。VAD 两值传 0 = 跟随服务端内置默认。
  */
 export function putSettings({ teacherPrompt, teacherVoice, teacherVadPrefixMs, teacherVadSilenceMs }) {
-  return request('/api/settings', {
+  return request(`${BASE}api/settings`, {
     method: 'PUT',
     headers: JSON_HEADERS,
     body: JSON.stringify({ teacherPrompt, teacherVoice, teacherVadPrefixMs, teacherVadSilenceMs }),
@@ -182,5 +189,5 @@ export function putSettings({ teacherPrompt, teacherVoice, teacherVadPrefixMs, t
  * card.generated_at——它是文本的版本，audio-only 重生成时不变。
  */
 export function wordAudioUrl(slug, kind, version) {
-  return `/api/words/${encodeURIComponent(slug)}/audio/${kind}.wav?v=${encodeURIComponent(version || '')}`;
+  return `${BASE}api/words/${encodeURIComponent(slug)}/audio/${kind}.wav?v=${encodeURIComponent(version || '')}`;
 }

@@ -47,6 +47,19 @@ GEMINI_API_KEY=xxx ./bin/phonicsfun
 > ② 自签证书并在设备上安装信任（iOS 只有这两条路）；
 > ③ 桌面 Chrome 可临时用 `chrome://flags` 的 `unsafely-treat-insecure-origin-as-secure` 白名单。
 
+支持部署在反向代理的子路径下（前端资源相对路径 + hash 路由 + API 相对入口页解析，
+后端无需任何配置）。要求反代**去掉前缀再转发**，并把无尾斜杠的入口重定向到带尾斜杠
+（否则浏览器会把相对路径解析到根，资源与 API 全部 404）。Caddy 示例：
+
+```
+redir /phonicsfun /phonicsfun/ 301
+handle_path /phonicsfun/* {
+    reverse_proxy 192.168.1.1:8080
+}
+```
+
+（`handle_path` 自带去前缀；AI 老师的 WebSocket 会被 `reverse_proxy` 自动代理，无需额外配置。）
+
 容器部署：`docker compose up -d --build`（`Dockerfile` 多阶段构建，前端在镜像内现场编译）。
 API key 与代理写在 compose 同目录的 `.env`（已 gitignore）里注入，数据落在 `./data`，
 详见 `docker-compose.yml` 头部注释。

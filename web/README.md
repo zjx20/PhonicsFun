@@ -34,7 +34,8 @@ npm run build      # 产物输出到 web/dist
 - **手写 hash 路由**（无路由库，见 `src/App.svelte`）：
   `#/` 首页、`#/import` 导入向导、`#/group/{id}` 播放页、`#/settings` 设置页。
 - **运行时零外部资源**：无 CDN / webfont / 外部图片，图标用 emoji 或内联 SVG，字体走系统字体栈。
-- **API**：全部相对路径 `/api/...`，封装在 `src/lib/api.js`，错误统一抛 `Error(中文消息)`，
+- **API**：全部基于 `api.js` 导出的 `BASE`（SPA 入口路径）解析，根部署时即 `/api/...`，
+  子路径反代时自动带前缀（部署要求见根 README）。封装在 `src/lib/api.js`，错误统一抛 `Error(中文消息)`，
   由调用方弹 Toast（`src/lib/toast.svelte.js`）。
 - **UI 文案全部中文（zh-CN）**，移动端优先，触控目标 ≥44px。
 
