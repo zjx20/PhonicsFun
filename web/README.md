@@ -11,8 +11,10 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-dev 服务器把 `/api` 代理到 `http://localhost:8080`（见 `vite.config.js`），
-所以本地开发需要 Go 后端先在 8080 端口跑起来。
+dev 服务器把 `/api` 代理到 `http://localhost:8080`（见 `vite.config.js`，
+`ws: true` 让 AI 老师的 WebSocket 也走代理），所以本地开发需要 Go 后端先在
+8080 端口跑起来。AI 老师的麦克风在 localhost 下可用；用局域网 IP 访问 dev
+服务器时浏览器不给 `getUserMedia`（需 HTTPS）。
 
 ## 构建
 
@@ -30,7 +32,7 @@ npm run build      # 产物输出到 web/dist
 - **Svelte 5 runes**：组件内用 `$state / $derived / $effect / $props`；
   全局状态放在 `src/lib/*.svelte.js` 模块里导出 `$state` 对象（不用旧版 `svelte/store`）。
 - **手写 hash 路由**（无路由库，见 `src/App.svelte`）：
-  `#/` 首页、`#/import` 导入向导、`#/group/{id}` 播放页。
+  `#/` 首页、`#/import` 导入向导、`#/group/{id}` 播放页、`#/settings` 设置页。
 - **运行时零外部资源**：无 CDN / webfont / 外部图片，图标用 emoji 或内联 SVG，字体走系统字体栈。
 - **API**：全部相对路径 `/api/...`，封装在 `src/lib/api.js`，错误统一抛 `Error(中文消息)`，
   由调用方弹 Toast（`src/lib/toast.svelte.js`）。
@@ -39,12 +41,14 @@ npm run build      # 产物输出到 web/dist
 ## 目录
 
 ```
-src/App.svelte                 hash 路由分发 + 全局 Toast
+src/App.svelte                 hash 路由分发 + 全局 Toast + AI 老师浮动按钮
 src/pages/HomePage.svelte      组列表（未全就绪时每 5s 轮询）
 src/pages/ImportWizard.svelte  导入向导：input → extracting → pick → creating
 src/pages/PlayerPage.svelte    组详情即播放页（滑动/按钮翻卡，未就绪每 2s 轮询）
+src/pages/SettingsPage.svelte  设置页：AI 老师性格提示词 + 音色 + 听说灵敏度（VAD）
 src/components/               GroupCard / WordChip / WordCard / ChunkRow /
-                               PlayButtons / CardMenu / CardPlaceholder / Toast
+                               PlayButtons / CardMenu / CardPlaceholder / Toast /
+                               TeacherFab（AI 老师按钮 + 对话面板 + 上下文注入 effect）
 src/lib/api.js                 fetch 封装（后端 API 契约的唯一入口）
 src/lib/groups.svelte.js       组列表状态 + 轮询控制
 src/lib/player.svelte.js       播放页状态：当前组/卡索引、卡片缓存、重新生成跟踪
@@ -52,4 +56,7 @@ src/lib/toast.svelte.js        全局 Toast
 src/lib/playback.svelte.js     声明式播放层：全局唯一播放状态（$state）+
                                整段播放/点读/预加载；组件只做派生渲染，
                                状态迁移全部带会话代数守卫
+src/lib/teacher.svelte.js      AI 老师：常驻 WS + 麦克风采集（AudioWorklet
+                               降采样 16k）+ 下行 24k PCM 流式播放 + 字幕；
+                               与 playback 互斥，同样的代数守卫范式
 ```

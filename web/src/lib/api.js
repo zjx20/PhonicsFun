@@ -28,6 +28,12 @@
 //                                                        feedback 是用户纠错意见（≤500 字），注入
 //                                                        文本生成 prompt；音频脚本是机械拼装的，
 //                                                        target=audio 时 feedback 被忽略
+//   GET    /api/settings                               {teacherPrompt, teacherVoice, teacherVadPrefixMs, teacherVadSilenceMs}
+//   PUT    /api/settings                               同上结构 → 200 回显；teacherPrompt ≤2000 字；
+//                                                      VAD 两值 0=跟随默认，非 0 需在后端区间内（20-500 / 200-2000 毫秒）
+//   GET    /api/teacher/live                           WebSocket：AI 老师实时语音（帧协议见
+//                                                        lib/teacher.svelte.js 顶部注释，此文件
+//                                                        只管 REST）
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -149,6 +155,23 @@ export function regenerateWord(slug, target, feedback = '') {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ target, feedback: feedback || undefined }),
+  });
+}
+
+/** GET /api/settings → {teacherPrompt, teacherVoice, teacherVadPrefixMs, teacherVadSilenceMs} */
+export function getSettings() {
+  return request('/api/settings');
+}
+
+/**
+ * PUT /api/settings：保存全局设置（AI 老师提示词/音色/听说灵敏度），
+ * 改动下次开启老师时生效。VAD 两值传 0 = 跟随服务端内置默认。
+ */
+export function putSettings({ teacherPrompt, teacherVoice, teacherVadPrefixMs, teacherVadSilenceMs }) {
+  return request('/api/settings', {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ teacherPrompt, teacherVoice, teacherVadPrefixMs, teacherVadSilenceMs }),
   });
 }
 

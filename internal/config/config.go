@@ -13,8 +13,11 @@ type Config struct {
 	DataDir   string // DATA_DIR，默认 ./data
 	TextModel string // TEXT_MODEL，默认 gemini-3.5-flash-lite
 	LiveModel string // LIVE_MODEL，默认 gemini-3.1-flash-live-preview
-	Voice     string // VOICE，默认 Kore
-	RPM       int    // RPM，默认 12（免费层按 15 RPM 假设留余量）
+	// TeacherModel 是 AI 老师对话会话用的 Live 模型。TEACHER_MODEL，
+	// 默认跟随 LiveModel——preview 模型改版时只需改 env，不写死代码。
+	TeacherModel string
+	Voice        string // VOICE，默认 Kore
+	RPM          int    // RPM，默认 12（免费层按 15 RPM 假设留余量）
 }
 
 func Load() (*Config, error) {
@@ -45,6 +48,10 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("LIVE_MODEL"); v != "" {
 		cfg.LiveModel = v
+	}
+	cfg.TeacherModel = cfg.LiveModel
+	if v := os.Getenv("TEACHER_MODEL"); v != "" {
+		cfg.TeacherModel = v
 	}
 	if v := os.Getenv("VOICE"); v != "" {
 		cfg.Voice = v

@@ -18,10 +18,11 @@ import (
 )
 
 type Client struct {
-	g         *genai.Client
-	textModel string
-	liveModel string
-	voice     string
+	g            *genai.Client
+	textModel    string
+	liveModel    string
+	teacherModel string
+	voice        string
 	// 免费层限额按请求数计。所有出站调用（generateContent 与 Live 会话
 	// 建立）共用这一个 limiter；Live 会话内的轮次不占请求配额，不计。
 	limiter *rate.Limiter
@@ -51,14 +52,15 @@ func New(ctx context.Context, cfg *config.Config) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		g:         g,
-		textModel: cfg.TextModel,
-		liveModel: cfg.LiveModel,
-		voice:     cfg.Voice,
-		limiter:   rate.NewLimiter(rate.Limit(cfg.RPM)/60.0, 1),
-		dict:      dict,
-		hyph:      hyph,
-		pos:       pos,
+		g:            g,
+		textModel:    cfg.TextModel,
+		liveModel:    cfg.LiveModel,
+		teacherModel: cfg.TeacherModel,
+		voice:        cfg.Voice,
+		limiter:      rate.NewLimiter(rate.Limit(cfg.RPM)/60.0, 1),
+		dict:         dict,
+		hyph:         hyph,
+		pos:          pos,
 	}, nil
 }
 

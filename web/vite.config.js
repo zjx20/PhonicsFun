@@ -23,8 +23,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      // dev 时把 /api 转发给本地 Go 后端（后端默认 PORT=8080）
-      '/api': 'http://localhost:8080',
+      // dev 时把 /api 转发给本地 Go 后端（后端默认 PORT=8080）；
+      // ws:true 让 /api/teacher/live 的 WebSocket upgrade 也被代理
+      '/api': { target: 'http://localhost:8080', ws: true },
     },
   },
 });

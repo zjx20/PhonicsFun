@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"phonicsfun/internal/llm"
 	"phonicsfun/internal/pipeline"
@@ -54,10 +56,18 @@ type Server struct {
 	llm   *llm.Client
 	dist  fs.FS // 前端构建产物根（含 index.html）
 	mux   *http.ServeMux
+
+	// AI 老师桥接：全局最多一路（见 teacher.go 顶部注释）。
+	teacherDial teacherDialer
+	teacherMu   sync.Mutex
+	teacher     *teacherBridge
 }
 
 func New(st *store.Store, p *pipeline.Pipeline, l *llm.Client, dist fs.FS) *Server {
 	s := &Server{store: st, pipe: p, llm: l, dist: dist, mux: http.NewServeMux()}
+	s.teacherDial = func(ctx context.Context, cfg llm.TeacherConfig, handle string) (teacherConn, error) {
+		return l.ConnectTeacher(ctx, cfg, handle)
+	}
 	s.mux.HandleFunc("POST /api/extract", s.handleExtract)
 	s.mux.HandleFunc("POST /api/groups", s.handleCreateGroup)
 	s.mux.HandleFunc("GET /api/groups", s.handleListGroups)
@@ -67,6 +77,10 @@ func New(st *store.Store, p *pipeline.Pipeline, l *llm.Client, dist fs.FS) *Serv
 	s.mux.HandleFunc("GET /api/words/{slug}", s.handleGetCard)
 	s.mux.HandleFunc("GET /api/words/{slug}/audio/{file}", s.handleAudio)
 	s.mux.HandleFunc("POST /api/words/{slug}/regenerate", s.handleRegenerate)
+	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	s.mux.HandleFunc("GET /api/teacher/live", s.handleTeacherLive) // WS 升级
+
 	s.mux.HandleFunc("/", s.handleSPA)
 	return s
 }

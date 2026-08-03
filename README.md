@@ -5,6 +5,7 @@
 - **AI 原生**：文本内容由 `gemini-3.5-flash-lite` 生成（结构化输出，内嵌 CMUdict 发音/音节数、Moby 音节切分、ECDICT 词性三路参照约束准确性）；音频由 `gemini-3.1-flash-live-preview` 的 Live API 生成（会话复用批量生成）。Google AI Studio 免费层即可运行。
 - **点读与跟读高亮**：拼读音频带毫秒级时间标注（连续朗读经静音分割重组构造，非模型返回），播放时高亮当前音，点击任意拼读块/音节即可单独播放该段。
 - **缓存优先**：所有内容在导入时后台预生成并落盘，翻卡零延迟；模型抽风时可对单卡分别重新生成文本/音频，重新生成文本时还可以附一句纠错反馈（如"音标不对，重音应在第一音节"），AI 会据此修正。
+- **AI 老师**：点右下角浮动按钮开启与 AI 老师的实时语音对话（Gemini Live）。老师能带着学当前单词卡（介绍发音/意思/用法，引导跟读并鼓励式纠音）、给当前单词组做听写（学生说"可以了"才读下一个）、或用简单英语自由聊天——三种玩法开口说即可切换，无需任何按钮。切换单词组/单词卡时上下文自动同步给老师，问"介绍一下这个单词"她就知道你看的是哪张卡。对话带双向实时字幕；设置页（首页右上角 ⚙️）可自定义老师性格、音色与"听说灵敏度"（老师判定孩子开口/说完的快慢，跟读短单词没反应或总被抢话时微调）。
 - **面向软路由部署**：Go 单二进制（CGO_ENABLED=0），纯文件存储（无数据库），前端（Svelte 5）构建产物嵌入二进制，运行时零外部资源依赖。
 
 ## 构建
@@ -33,11 +34,18 @@ GEMINI_API_KEY=xxx ./bin/phonicsfun
 | `DATA_DIR` | `./data` | 数据目录（组 JSON、卡片 JSON、WAV 音频） |
 | `TEXT_MODEL` | `gemini-3.5-flash-lite` | 文本模型 |
 | `LIVE_MODEL` | `gemini-3.1-flash-live-preview` | Live 音频模型（preview 模型改版时改这里即可） |
-| `VOICE` | `Kore` | Live 预置音色 |
+| `TEACHER_MODEL` | 跟随 `LIVE_MODEL` | AI 老师对话模型 |
+| `VOICE` | `Kore` | Live 预置音色（拼读发音；也是 AI 老师音色的默认值，老师音色可在设置页单独选择） |
 | `RPM` | `12` | 出站请求限流（免费层按 15 RPM 留余量） |
 | `HTTPS_PROXY` | — | 代理（REST 与 Live WebSocket 均经 Go 标准库透传） |
 
 部署到软路由：`deploy/phonicsfun.service`（systemd）或 `deploy/phonicsfun.init`（OpenWrt procd），说明见文件头注释。
+
+> **AI 老师需要 HTTPS（或 localhost）**：浏览器只在 secure context 下开放麦克风（`getUserMedia`），
+> 用 `http://192.168.x.x` 访问时 AI 老师按钮会提示不可用（其余功能不受影响）。出路：
+> ① 在软路由上加一层 HTTPS 反代（如 Caddy，一行配置自动签发内网证书）；
+> ② 自签证书并在设备上安装信任（iOS 只有这两条路）；
+> ③ 桌面 Chrome 可临时用 `chrome://flags` 的 `unsafely-treat-insecure-origin-as-secure` 白名单。
 
 容器部署：`docker compose up -d --build`（`Dockerfile` 多阶段构建，前端在镜像内现场编译）。
 API key 与代理写在 compose 同目录的 `.env`（已 gitignore）里注入，数据落在 `./data`，
@@ -68,7 +76,8 @@ data/
 │   ├── word.wav          # 整词发音（慢速+常速各一遍）
 │   ├── blend.wav         # 拼读：音节内逐块拼 → 合成音节 → 连读成整词
 │   └── blend.cues.json   # blend 各段起止毫秒（点读/高亮用，与 blend.wav 成对生成）
-└── groups/<id>.json      # 单词组（一次导入一组，跨组同词共享缓存）
+├── groups/<id>.json      # 单词组（一次导入一组，跨组同词共享缓存）
+└── settings.json         # 全局设置（AI 老师性格提示词/音色/听说灵敏度；缺失 = 全默认）
 ```
 
 升级提示：card.json 带 schema 版本号，新版本启动时会自动检测旧版卡片并删除重建（全部文本+音频重新生成，消耗一轮 API 配额）。
@@ -78,7 +87,8 @@ data/
 ```sh
 go test ./... -race            # 后端测试
 go run ./cmd/spike -text       # Live API 链路独立验证（生成真实卡片并发音，需 GEMINI_API_KEY）
-cd web && npm run dev          # 前端热更新（/api 代理到 :8080，先把后端跑起来）
+go run ./cmd/spike -teacher    # AI 老师链路独立验证（上下文注入 + 对话轮 + 转写，需 GEMINI_API_KEY）
+cd web && npm run dev          # 前端热更新（/api 代理到 :8080 含 WebSocket，先把后端跑起来）
 ```
 
 生成一组 20 词的完整内容约需 8-10 分钟（受免费层 RPM 限制），导入后即可先学已就绪的词，前端会轮询进度。

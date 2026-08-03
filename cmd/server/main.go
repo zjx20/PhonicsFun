@@ -53,10 +53,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	api := httpapi.New(st, pipe, client, dist)
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Port),
-		Handler: httpapi.New(st, pipe, client, dist),
+		Handler: api,
 	}
+	// Shutdown 只等普通请求，不管 hijack 掉的 WebSocket：老师长连接要在
+	// 这里主动断开，否则 5 秒超时后进程带着活连接硬退。
+	srv.RegisterOnShutdown(api.CloseTeacher)
 
 	errCh := make(chan error, 1)
 	go func() {

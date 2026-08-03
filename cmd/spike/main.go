@@ -11,6 +11,11 @@
 // 默认用内置示例卡，不消耗文本模型配额。输出除成品 blend/word WAV 与
 // cues JSON 外，还保存分割前的两轮原始音频（raw-body/raw-tail），便于
 // 排查静音分割问题。
+//
+// -teacher 验证 AI 老师对话链路（与拼读链路互斥）：建 TeacherSession →
+// 注入 [CONTEXT] 便签（与 httpapi 桥接同一格式）→ 文本轮提问 → 打印
+// 双向转写、把老师回复 PCM 存 WAV。人耳试听重点：老师是否泄露/朗读了
+// [CONTEXT] 便签内容、是否知道"当前单词"。
 package main
 
 import (
@@ -35,6 +40,8 @@ func main() {
 	out := flag.String("out", "./spike-out", "输出目录")
 	genText := flag.Bool("text", false, "先用文本模型生成真实卡片（额外验证 generateContent 链路）")
 	feedback := flag.String("feedback", "", "注入文本生成的用户纠错反馈（需配合 -text，验证 regenerate 反馈链路）")
+	teacher := flag.Bool("teacher", false, "验证 AI 老师对话链路（[CONTEXT] 注入 + 文本轮 + 转写）")
+	persona := flag.String("persona", "", "老师性格设定（需配合 -teacher，模拟 settings.teacherPrompt）")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -47,6 +54,11 @@ func main() {
 	client, err := llm.New(ctx, cfg)
 	if err != nil {
 		log.Fatalf("客户端: %v", err)
+	}
+
+	if *teacher {
+		runTeacher(ctx, client, cfg, *out, *persona)
+		return
 	}
 
 	card := sampleCard(*word)

@@ -9,7 +9,10 @@
 </script>
 
 <header class="page-header">
-  <h1 class="home-title">🎈 PhonicsFun 自然拼读</h1>
+  <div class="home-title-row">
+    <h1 class="home-title">🎈 PhonicsFun 自然拼读</h1>
+    <a class="icon-btn settings-link" href="#/settings" aria-label="设置">⚙️</a>
+  </div>
   <p class="home-subtitle">一起来拼读单词吧！</p>
 </header>
 
@@ -42,9 +45,24 @@
 <a class="fab" href="#/import">＋ 导入</a>
 
 <style>
+  .home-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
   .home-title {
     font-size: 26px;
     color: var(--primary-dark);
+  }
+  .settings-link {
+    font-size: 22px;
+    text-decoration: none;
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .home-subtitle {
     margin-top: 4px;
