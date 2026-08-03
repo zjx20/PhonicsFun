@@ -21,6 +21,33 @@ import (
 // JPEG（远小于此），这里只是防御异常客户端；Gemini 请求总上限是 20MB。
 const maxUploadBytes = 15 << 20
 
+// --- 缓存策略 ---
+// http.ServeFile 自带 Last-Modified 而不带 Cache-Control 时，浏览器按
+// "文件年龄的 10%" 启发式缓存——重新生成产物后普通刷新拿到的仍是旧内容。
+// 因此每类响应都必须显式声明缓存语义，按"URL 是否自带版本"分层：
+//   - 动态 JSON（组列表/详情、extract 等）：no-store，轮询必须每次新鲜；
+//   - card.json：URL 无版本参数 → no-cache，靠 Last-Modified 每次
+//     revalidate（未变 304，重新生成后 mtime 必变——生成经过一次数秒的
+//     LLM 调用，秒级精度足够）；
+//   - 音频与 cues：前端 URL 恒带 ?v=<audioVersion>（音频产物 mtime 毫秒，
+//     任何重生成都重写文件、版本必变）→ 带 v 的请求 immutable 永久缓存，
+//     不带 v 的裸 URL 退回 no-cache；
+//   - SPA 静态资产：vite 产物文件名带内容 hash（assets/）→ immutable，
+//     index.html 等入口无 hash → no-cache（embed 文件无 mtime，每次全量
+//     返回，入口文件很小）。
+
+const cacheImmutable = "public, max-age=31536000, immutable"
+
+// setFileCache 为文件类响应设置缓存头：URL 带 ?v= 版本参数的可永久缓存，
+// 否则必须 revalidate。
+func setFileCache(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("v") != "" {
+		w.Header().Set("Cache-Control", cacheImmutable)
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+}
+
 type Server struct {
 	store *store.Store
 	pipe  *pipeline.Pipeline
@@ -211,6 +238,7 @@ func (s *Server) handleGetCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, s.store.CardPath(slug))
 }
 
@@ -230,6 +258,7 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		setFileCache(w, r)
 		http.ServeFile(w, r, s.store.CuesPath(slug))
 		return
 	default:
@@ -241,6 +270,7 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// http.ServeFile 自带 Range 支持（iOS Safari 的 <audio> 依赖）
+	setFileCache(w, r)
 	http.ServeFile(w, r, s.store.AudioPath(slug, kind))
 }
 
@@ -308,12 +338,20 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	}
 	if f, err := s.dist.Open(path); err == nil {
 		f.Close()
+		// vite 产物文件名带内容 hash，可永久缓存；index.html 等无 hash
+		// 入口必须每次取新，否则前端发新版后旧页面还引用老资源。
+		if strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control", cacheImmutable)
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		http.ServeFileFS(w, r, s.dist, path)
 		return
 	}
 	// SPA fallback：一切未知路径回 index.html（hash 路由不会走到这，保险）
 	if f, err := s.dist.Open("index.html"); err == nil {
 		f.Close()
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFileFS(w, r, s.dist, "index.html")
 		return
 	}
@@ -325,6 +363,7 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("[http] 编码响应失败: %v", err)

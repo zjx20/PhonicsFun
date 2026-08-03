@@ -73,6 +73,8 @@ web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也�
 | `GET /api/words/{slug}/audio/blend.cues.json` | blend 时间标注（点读/高亮）；404 = 无 cues，前端降级 |
 | `POST /api/words/{slug}/regenerate` | `{target:"text"\|"audio"\|"both", feedback?}` → 202；生成中返回 409；`feedback` 是用户纠错意见（≤500 字，超长 400），注入文本生成 prompt，target=audio 时忽略 |
 
+缓存策略（httpapi 顶部注释是权威）：动态 JSON 一律 `no-store`；card.json `no-cache`（URL 无版本参数，靠 Last-Modified revalidate）；音频/cues 带 `?v=` 时 `immutable` 永久缓存、裸 URL 退 `no-cache`；SPA 的 `assets/`（文件名带 hash）`immutable`，入口 `no-cache`。新增文件类端点必须显式声明缓存头——`http.ServeFile` 默认带 Last-Modified 无 Cache-Control，会被浏览器启发式缓存，产物重新生成后普通刷新看不到新内容。
+
 ## 环境与已知坑
 
 - **本 devcontainer 里 8001 端口被 localhost-proxy 占用**，本地一律用 8080（后端默认、vite proxy、文档均已统一）。
