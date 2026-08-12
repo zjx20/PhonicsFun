@@ -7,7 +7,8 @@ package httpapi
 //     24kHz（老师语音，上游 chunk 原样转发，零转码）。
 //   - 文本帧：JSON，均含 type。
 //     浏览器→服务：context（当前单词组）、card（当前单词卡）、mic（on=false
-//     暂停采集，恢复直接续发音频帧）。
+//     暂停采集，恢复直接续发音频帧）、photo（学生拍照给老师看，data =
+//     base64 JPEG，解码后 ≤ teacherMaxPhotoBytes，超限回非致命 error 帧）。
 //     服务→浏览器：ready、transcript、interrupted、turn_complete、restarted、
 //     error（fatal=true 后随即关连接）。
 //
@@ -26,6 +27,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -50,6 +52,12 @@ const (
 	teacherOutBuf = 256
 	// teacherDialRetries：上游连续建连失败（或连上即死）多少次后放弃。
 	teacherDialRetries = 3
+	// teacherMaxPhotoBytes：photo 消息解码后的大小上限。前端压到长边
+	// ≤1024px 的 JPEG（约 100-300KB），上限留足余量、同时兜住异常客户端。
+	teacherMaxPhotoBytes = 2 << 20
+	// teacherReadLimit：浏览器单帧上限。音频帧只有几 KB，尺寸大头是
+	// photo 文本帧：base64 膨胀 4/3 + JSON 包装，2MB 上限取 4MB 足够。
+	teacherReadLimit = 4 << 20
 )
 
 var teacherUpgrader = websocket.Upgrader{
@@ -76,6 +84,7 @@ type teacherConn interface {
 	SendAudio(pcm []byte) error
 	SendAudioStreamEnd() error
 	InjectContext(text string) error
+	SendImage(data []byte, mime string) error
 	Receive() (*llm.TeacherEvent, error)
 	NeedsRotation() bool
 	Close() error
@@ -161,8 +170,10 @@ type teacherBridge struct {
 	speaking     bool        // 模型正在下发语音：注入排队到轮次边界
 	pendingGroup string      // speaking 期间到达的便签，同类只留最新
 	pendingCard  string
-	lastGroup    string // 最近一次便签，轮换重连后重放
+	pendingPhoto []byte // speaking 期间到达的照片，只留最新
+	lastGroup    string // 最近一次便签/照片，轮换重连后重放
 	lastCard     string
+	lastPhoto    []byte
 	resumeHandle string
 }
 
@@ -174,6 +185,7 @@ func (b *teacherBridge) run(parent context.Context) {
 	go b.runUpstream(ctx)
 	go b.browserWriter()
 
+	b.ws.SetReadLimit(teacherReadLimit)
 	b.ws.SetReadDeadline(time.Now().Add(teacherReadWait))
 	b.ws.SetPongHandler(func(string) error {
 		return b.ws.SetReadDeadline(time.Now().Add(teacherReadWait))
@@ -240,6 +252,7 @@ type teacherClientMsg struct {
 	IPA  string `json:"ipa"`
 	ZH   string `json:"zh"`
 	On   bool   `json:"on"`
+	Data string `json:"data"` // photo：base64 JPEG
 }
 
 func (b *teacherBridge) handleClientMsg(data []byte) {
@@ -258,6 +271,17 @@ func (b *teacherBridge) handleClientMsg(data []byte) {
 			return
 		}
 		b.noteAndInject(false, llm.ContextNoteCard(m.Word, m.IPA, m.ZH))
+	case "photo":
+		photo, err := base64.StdEncoding.DecodeString(m.Data)
+		if err != nil || len(photo) == 0 {
+			b.sendJSON(map[string]any{"type": "error", "message": "照片数据无效，请重新拍一张"})
+			return
+		}
+		if len(photo) > teacherMaxPhotoBytes {
+			b.sendJSON(map[string]any{"type": "error", "message": "照片太大，请重新拍一张"})
+			return
+		}
+		b.photoAndSend(photo)
 	case "mic":
 		if m.On {
 			return // 恢复采集无需通知，浏览器直接续发音频帧
@@ -300,6 +324,26 @@ func (b *teacherBridge) noteAndInject(isGroup bool, note string) {
 func (b *teacherBridge) injectLocked(sess teacherConn, note string) {
 	if err := sess.InjectContext(note); err != nil {
 		log.Printf("[teacher] 注入上下文失败: %v", err)
+	}
+}
+
+// photoAndSend 记录最新照片并发给上游，排队规则与 noteAndInject 一致
+//（说话中/未就绪时排队到轮次边界，只留最新）。
+func (b *teacherBridge) photoAndSend(photo []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lastPhoto = photo
+	if b.sess == nil || b.speaking {
+		b.pendingPhoto = photo
+		return
+	}
+	b.sendImageLocked(b.sess, photo)
+}
+
+// sendImageLocked 在持有 b.mu 时发照片（协议固定 JPEG，前端压缩产物）。
+func (b *teacherBridge) sendImageLocked(sess teacherConn, photo []byte) {
+	if err := sess.SendImage(photo, "image/jpeg"); err != nil {
+		log.Printf("[teacher] 发送照片失败: %v", err)
 	}
 }
 
@@ -348,10 +392,11 @@ func (b *teacherBridge) runUpstream(ctx context.Context) {
 			b.turnBoundary(sess)
 			b.sendJSON(map[string]any{"type": "ready"})
 		} else {
-			// 无论是否带 handle 恢复成功都重放便签：幂等，且防 handle
-			// 静默失效导致老师"失忆"当前组/卡
+			// 无论是否带 handle 恢复成功都重放便签与最近照片：幂等，且防
+			// handle 静默失效导致老师"失忆"当前组/卡/照片（照片重放多花
+			// 一点图像 token，每 13 分钟一次可以接受）
 			b.mu.Lock()
-			group, card := b.lastGroup, b.lastCard
+			group, card, photo := b.lastGroup, b.lastCard, b.lastPhoto
 			b.injectLocked(sess, llm.ContextNoteRefreshed)
 			if group != "" {
 				b.injectLocked(sess, group)
@@ -359,7 +404,10 @@ func (b *teacherBridge) runUpstream(ctx context.Context) {
 			if card != "" {
 				b.injectLocked(sess, card)
 			}
-			b.pendingGroup, b.pendingCard = "", ""
+			if photo != nil {
+				b.sendImageLocked(sess, photo)
+			}
+			b.pendingGroup, b.pendingCard, b.pendingPhoto = "", "", nil
 			b.mu.Unlock()
 			b.sendJSON(map[string]any{"type": "restarted"})
 		}
@@ -430,7 +478,7 @@ func (b *teacherBridge) receiveLoop(sess teacherConn) (gotEvent bool) {
 	}
 }
 
-// turnBoundary 在轮次边界清 speaking 并 flush 排队的便签。
+// turnBoundary 在轮次边界清 speaking 并 flush 排队的便签与照片。
 func (b *teacherBridge) turnBoundary(sess teacherConn) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -442,6 +490,10 @@ func (b *teacherBridge) turnBoundary(sess teacherConn) {
 	if b.pendingCard != "" {
 		b.injectLocked(sess, b.pendingCard)
 		b.pendingCard = ""
+	}
+	if b.pendingPhoto != nil {
+		b.sendImageLocked(sess, b.pendingPhoto)
+		b.pendingPhoto = nil
 	}
 }
 

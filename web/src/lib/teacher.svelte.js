@@ -6,7 +6,8 @@
 // 代数，绝不影响新会话。
 //
 // 帧协议（与 internal/httpapi/teacher.go 顶部注释一致）：
-//   上行二进制 = 16kHz PCM16 麦克风帧；上行 JSON = context/card/mic；
+//   上行二进制 = 16kHz PCM16 麦克风帧；上行 JSON = context/card/mic/photo
+//   （photo.data = base64 JPEG，拍照给老师看）；
 //   下行二进制 = 24kHz PCM16 老师语音；下行 JSON = ready/transcript/
 //   interrupted/turn_complete/restarted/error。
 //
@@ -15,6 +16,7 @@
 // 听成学生发音；本地播放结束后自动恢复。
 
 import { BASE } from './api.js';
+import { compressImage } from './image.js';
 import { playback, stopPlayback } from './playback.svelte.js';
 import { playerState } from './player.svelte.js';
 import { toastError } from './toast.svelte.js';
@@ -267,6 +269,31 @@ function connected() {
   return ws && ws.readyState === WebSocket.OPEN && teacherState.status !== 'connecting';
 }
 
+/**
+ * 拍照给老师看：压缩 → base64 → photo 帧。老师静默记住照片，等孩子开口
+ * 问（提示词 PHOTOS 段约定），所以发送后不改会话状态，只落一条字幕标记。
+ */
+export async function sendPhoto(file) {
+  if (!connected()) return;
+  const g = gen;
+  try {
+    // 长边 ≤1024px、quality 0.8：给老师"看个大概"够用，控上行体积与 token
+    const blob = await compressImage(file, 1024, 0.8);
+    const b64 = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result.split(',')[1]);
+      r.onerror = () => reject(new Error('图片编码失败'));
+      r.readAsDataURL(blob);
+    });
+    if (g !== gen || !connected()) return;
+    sendJSON({ type: 'photo', data: b64 });
+    // final:true：独立成条，后续语音转写增量不会追加到这条上
+    addFinalLine('user', '📷 拍了张照片给老师看');
+  } catch (err) {
+    if (g === gen) toastError(err.message || '照片发送失败');
+  }
+}
+
 // 收到 ready 后主动补一次当前上下文，覆盖"先进组再开老师"的方向；
 // "先开老师再进组"由 TeacherFab 的 $effect 覆盖。
 function syncNow() {
@@ -379,6 +406,13 @@ function addTranscript(role, text) {
 
 function finalizeTranscript() {
   for (const t of teacherState.transcript) t.final = true;
+}
+
+// 独立的已定稿条目（照片标记等事件行），不与转写增量合并。
+function addFinalLine(role, text) {
+  const arr = teacherState.transcript;
+  arr.push({ role, text, final: true });
+  if (arr.length > TRANSCRIPT_LIMIT) arr.splice(0, arr.length - TRANSCRIPT_LIMIT);
 }
 
 // —— 页面可见性：iOS 切后台会挂起 WS，回前台时死连接置错误态 ——

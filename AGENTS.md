@@ -1,6 +1,6 @@
 # AGENTS.md — 给 AI agent 的项目指南
 
-PhonicsFun 是教小孩英语自然拼读的自托管 web 应用：家长录入单词（粘贴文本/拍照，AI 提取），AI 生成单词卡全部内容（中英释义、IPA、字素-音素拆解、整词发音音频、逐音素拼读音频），按"一次导入 = 一组"组织，学习时组内循环翻卡；组内单词可在列表页修改/增删/拖拽调序，改动的词自动重新生成。另有"AI 老师"实时语音对话（Gemini Live，浏览器麦克风经后端 WS 代理双向流），可引导学单词/听写/自由英语聊天，切组切卡时前端向常驻连接注入上下文便签。Go 单二进制 + 纯文件存储 + 内嵌 Svelte 5 前端，部署目标是资源拮据的软路由。产品需求原文见 `IDEA.md`，面向人类的说明见 `README.md`。
+PhonicsFun 是教小孩英语自然拼读的自托管 web 应用：家长录入单词（粘贴文本/拍照，AI 提取），AI 生成单词卡全部内容（中英释义、IPA、字素-音素拆解、整词发音音频、逐音素拼读音频），按"一次导入 = 一组"组织，学习时组内循环翻卡；组内单词可在列表页修改/增删/拖拽调序，改动的词自动重新生成。另有"AI 老师"实时语音对话（Gemini Live，浏览器麦克风经后端 WS 代理双向流），可引导学单词/听写/自由英语聊天，也可拍照给老师看（照片入会话上下文，孩子开口问老师再谈），切组切卡时前端向常驻连接注入上下文便签。Go 单二进制 + 纯文件存储 + 内嵌 Svelte 5 前端，部署目标是资源拮据的软路由。产品需求原文见 `IDEA.md`，面向人类的说明见 `README.md`。
 
 ## 常用命令
 
@@ -11,7 +11,7 @@ make build               # 当前平台二进制 → bin/phonicsfun
 make release             # 交叉编译 linux/amd64 + linux/arm64
 make run                 # 本地起服务（自动 source .secrets），http://localhost:8080
 go run ./cmd/spike -text # AI 链路独立验证：真实生成一张卡并发音（需 API key）
-go run ./cmd/spike -teacher # AI 老师链路独立验证：便签注入 + 对话轮 + 转写（需 API key）
+go run ./cmd/spike -teacher # AI 老师链路独立验证：便签注入 + 对话轮 + 发照片 + 转写（需 API key）
 ```
 
 ## 密钥约定（重要）
@@ -27,7 +27,7 @@ go run ./cmd/spike -teacher # AI 老师链路独立验证：便签注入 + 对�
 cmd/server/          入口：config → store → llm → pipeline → httpapi，优雅退出
 cmd/spike/           Live/文本链路独立验证程序（复用 llm/pipeline 同一套代码路径，
                      含 blend 分割重组；-text 走真实文本生成；-teacher 验证 AI 老师
-                     对话链路：[CONTEXT] 注入 + 文本轮 + 双向转写）
+                     对话链路：[CONTEXT] 注入 + 文本轮 + 发照片 + 双向转写）
 internal/config/     env 解析（见下方环境变量表）
 internal/store/      文件存储层：Slug 归一化、原子写、Card(v2)/Group/Cues 类型与 CRUD、
                      Settings（settings.json：AI 老师提示词/音色/VAD 灵敏度覆盖值）
@@ -60,7 +60,7 @@ web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也�
 7. **Live 会话复用**：每会话最多 8 词、13 分钟，收到 GoAway 或出错即轮换（常量在 `internal/llm/live.go`）；音频会话官方上限约 15 分钟，轮换阈值必须留余量。单词重生成走全新小会话。每词 2 轮且顺序固定：先整词（blend 收尾依赖 word.wav），后 blend 主体。AI 老师对话会话（`internal/llm/teacher.go`）同受 13 分钟 + GoAway 轮换约束，轮换只在轮次边界做、靠非透明 SessionResumption handle 续对话历史（handle 失效自动回落全新会话 + 重注入上下文便签）；桥接层强制全局单路（新连接 takeover 踢旧），与 pipeline 的 1 路合计 2 路，留免费层（约 3 路并发）的轮换交叠余量。
 8. **所有出站 Gemini 调用（含 Live 建会话、AI 老师建会话/轮换重连）共享 `llm.Client` 里的一个 rate.Limiter**。免费层限额官方不再公布，按 15 RPM / 1000 RPD 保守假设（默认 12 RPM 留余量）；Live 会话内的轮次不计请求数。
 9. **slug**（`store.Slug`）：小写、仅 `[a-z0-9']`、`'`→`_`。同 slug 即同词，跨组共享缓存目录；URL 里的 slug 参数一律先过 `store.Slug` 再拼路径（防穿越）。
-10. **AI 老师的提示词与 [CONTEXT] 便签是一对契约**：老师会话的 systemInstruction 是 `llm.teacherBaseInstruction` + 家长自定义段（`BuildTeacherInstruction`），与 TTS 用的 `liveSystemInstruction` 完全独立、互不影响。`[CONTEXT]` 便签（`llm.ContextNote*`）与基础指令的 CONTEXT NOTES 段必须同步改动；便签用 `SendClientContent(turnComplete=false)` 注入（只累积进 prompt、不触发回应），模型说话中到达的便签由桥接排队到轮次边界（TurnComplete/Interrupted）再注入。改动后跑 `go run ./cmd/spike -teacher` 验证便签不被朗读、老师"知道"当前卡。老师"没听见短促跟读/接话慢/抢话"属于 VAD 端点检测问题：调 `llm.teacherVAD*` 默认常量或引导用户去设置页调"听说灵敏度"（settings 覆盖值），别去动提示词。
+10. **AI 老师的提示词与 [CONTEXT] 便签是一对契约**：老师会话的 systemInstruction 是 `llm.teacherBaseInstruction` + 家长自定义段（`BuildTeacherInstruction`），与 TTS 用的 `liveSystemInstruction` 完全独立、互不影响。`[CONTEXT]` 便签（`llm.ContextNote*`）与基础指令的 CONTEXT NOTES 段必须同步改动；便签用 `SendClientContent(turnComplete=false)` 注入（只累积进 prompt、不触发回应），模型说话中到达的便签由桥接排队到轮次边界（TurnComplete/Interrupted）再注入。改动后跑 `go run ./cmd/spike -teacher` 验证便签不被朗读、老师"知道"当前卡、老师能说出照片内容。"拍照给老师看"的照片经 `TeacherSession.SendImage` 走与便签相同的 clientContent 通道（turnComplete=false 静默入上下文，与提示词 PHOTOS 段是一对契约：老师等孩子开口问起照片再谈）；不要改走 realtime Video 帧——那条路径为响应速度牺牲确定性排序，一次性照片会被延后或丢弃（紧跟的提问模型答的还是旧图，实测如此）。桥接层照片的排队（说话中留到轮次边界、只留最新）与轮换重放规则与便签一致。老师"没听见短促跟读/接话慢/抢话"属于 VAD 端点检测问题：调 `llm.teacherVAD*` 默认常量或引导用户去设置页调"听说灵敏度"（settings 覆盖值），别去动提示词。
 
 ## HTTP API 契约
 
@@ -80,7 +80,7 @@ web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也�
 | `POST /api/words/{slug}/regenerate` | `{target:"text"\|"audio"\|"both", feedback?}` → 202；生成中返回 409；`feedback` 是用户纠错意见（≤500 字，超长 400），注入文本生成 prompt，target=audio 时忽略 |
 | `GET /api/settings` | `{teacherPrompt, teacherVoice, teacherVadPrefixMs, teacherVadSilenceMs}`；文件缺失返回零值默认（VAD 两值 0 = 跟随 `llm` 内置默认） |
 | `PUT /api/settings` | 同上结构 → 200 回显；`teacherPrompt` >2000 字 → 400；VAD 两值非 0 时须在 `store.Min/MaxTeacherVAD*Ms` 区间内（20-500 / 200-2000 毫秒），否则 400；改动下次开启 AI 老师生效 |
-| `GET /api/teacher/live` | **WebSocket**（AI 老师实时语音）。二进制帧 = 裸 PCM16 LE mono：浏览器→服务 16kHz 麦克风、服务→浏览器 24kHz 老师语音。文本帧 = JSON：↑`context`（组词表）/`card`（当前卡）/`mic`（on=false 暂停采集）；↓`ready`/`transcript`（role=user\|teacher 增量）/`interrupted`/`turn_complete`/`restarted`/`error`（fatal 后关连接）。全局单路，新连接踢旧连接 |
+| `GET /api/teacher/live` | **WebSocket**（AI 老师实时语音）。二进制帧 = 裸 PCM16 LE mono：浏览器→服务 16kHz 麦克风、服务→浏览器 24kHz 老师语音。文本帧 = JSON：↑`context`（组词表）/`card`（当前卡）/`mic`（on=false 暂停采集）/`photo`（data=base64 JPEG，解码后 ≤2MB，拍照给老师看；坏数据/超限回非致命 `error` 帧）；↓`ready`/`transcript`（role=user\|teacher 增量）/`interrupted`/`turn_complete`/`restarted`/`error`（fatal 后关连接）。全局单路，新连接踢旧连接 |
 
 缓存策略（httpapi 顶部注释是权威）：动态 JSON 一律 `no-store`；card.json `no-cache`（URL 无版本参数，靠 Last-Modified revalidate）；音频/cues 带 `?v=` 时 `immutable` 永久缓存、裸 URL 退 `no-cache`；SPA 的 `assets/`（文件名带 hash）`immutable`，入口 `no-cache`。新增文件类端点必须显式声明缓存头——`http.ServeFile` 默认带 Last-Modified 无 Cache-Control，会被浏览器启发式缓存，产物重新生成后普通刷新看不到新内容。
 

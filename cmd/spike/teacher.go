@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,7 +18,8 @@ import (
 )
 
 // runTeacher 验证 AI 老师对话链路：注入 [CONTEXT] 便签后用文本轮提问，
-// 确认老师"知道"当前单词且不朗读便签本身。每轮回复 PCM 存 WAV 供试听。
+// 确认老师"知道"当前单词且不朗读便签本身；再发一张测试照片提问，确认
+// "拍照给老师看"链路可用。每轮回复 PCM 存 WAV 供试听。
 func runTeacher(ctx context.Context, client *llm.Client, cfg *config.Config, out, persona string) {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		log.Fatal(err)
@@ -55,14 +60,26 @@ func runTeacher(ctx context.Context, client *llm.Client, cfg *config.Config, out
 		}
 	}()
 
-	turns := []string{
+	turns := []struct {
+		photo []byte // 非 nil：提问前先发这张照片（走生产的 SendImage 路径）
+		q     string
+	}{
 		// 验证上下文：老师应介绍 cat，且绝不提及 [CONTEXT] 便签的存在
-		"Teacher, can you introduce this word to me?",
+		{nil, "Teacher, can you introduce this word to me?"},
 		// 验证听写玩法的进入与词组顺序
-		"我们来听写吧",
+		{nil, "我们来听写吧"},
+		// 验证拍照给老师看：老师应说出照片内容（黄色圆形、蓝色背景）
+		{photoJPEG(), "Teacher, look at my photo! What do you see?"},
 	}
 	var resumeHandle string
-	for i, q := range turns {
+	for i, turn := range turns {
+		if turn.photo != nil {
+			log.Printf("发送照片（蓝底黄圆 JPEG，%d 字节）", len(turn.photo))
+			if err := sess.SendImage(turn.photo, "image/jpeg"); err != nil {
+				log.Fatalf("SendImage: %v", err)
+			}
+		}
+		q := turn.q
 		log.Printf("--- 学生（文本轮 %d）: %s", i+1, q)
 		if err := sess.SendText(q); err != nil {
 			log.Fatalf("SendText: %v", err)
@@ -89,11 +106,35 @@ func runTeacher(ctx context.Context, client *llm.Client, cfg *config.Config, out
 	} else {
 		log.Printf("⚠️  未收到 SessionResumption handle")
 	}
-	log.Printf("完成。人耳试听 %s 下的 teacher-*.wav：确认①介绍的是 cat；②听写按 cat, dog, fish 顺序；③没有朗读便签内容。", out)
+	log.Printf("完成。人耳试听 %s 下的 teacher-*.wav：确认①介绍的是 cat；②听写按 cat, dog, fish 顺序；③没有朗读便签内容；④老师说出了照片内容（黄色圆形/蓝色背景）。", out)
 }
 
 func filenameForTurn(n int) string {
 	return "teacher-turn-" + string(rune('0'+n)) + ".wav"
+}
+
+// photoJPEG 生成一张特征明确的测试照片（蓝底居中黄圆），老师能否说出
+// 内容即验证图片入上下文的链路。
+func photoJPEG() []byte {
+	const w, h, r = 480, 360, 100
+	bg := color.RGBA{60, 130, 250, 255}
+	fg := color.RGBA{255, 210, 40, 255}
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dx, dy := x-w/2, y-h/2
+			if dx*dx+dy*dy <= r*r {
+				img.SetRGBA(x, y, fg)
+			} else {
+				img.SetRGBA(x, y, bg)
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		log.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 type teacherItem struct {

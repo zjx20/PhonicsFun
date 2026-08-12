@@ -1,5 +1,6 @@
 <script>
   import { extractFromText, extractFromImage, createGroup } from '../lib/api.js';
+  import { compressImage } from '../lib/image.js';
   import { toastError, toastSuccess } from '../lib/toast.svelte.js';
   import WordChip from '../components/WordChip.svelte';
 
@@ -34,39 +35,6 @@
     controller?.abort();
   });
 
-  function loadImageElement(file) {
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => resolve({ img, url });
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(new Error('无法读取该图片，请换一张试试'));
-      };
-      img.src = url;
-    });
-  }
-
-  // 上传前用 canvas 压缩：长边 ≤1600px 的 JPEG（quality 0.85），省流量也加快识别
-  async function compressImage(file) {
-    const { img, url } = await loadImageElement(file);
-    try {
-      const maxSide = 1600;
-      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
-      const width = Math.max(1, Math.round(img.naturalWidth * scale));
-      const height = Math.max(1, Math.round(img.naturalHeight * scale));
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
-      if (!blob) throw new Error('图片处理失败，请换一张试试');
-      return blob;
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  }
-
   async function startExtract() {
     if (!canExtract) return;
     error = '';
@@ -77,7 +45,8 @@
       if (mode === 'text') {
         result = await extractFromText(text.trim(), controller.signal);
       } else {
-        const blob = await compressImage(imageFile);
+        // 长边 ≤1600px、quality 0.85：识词要保住小字清晰度
+        const blob = await compressImage(imageFile, 1600, 0.85);
         result = await extractFromImage(blob, controller.signal);
       }
       const words = result?.words ?? [];

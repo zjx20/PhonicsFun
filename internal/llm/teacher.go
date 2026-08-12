@@ -160,6 +160,22 @@ func (s *TeacherSession) SendText(text string) error {
 	})
 }
 
+// SendImage 发送一张学生拍的照片（"拍照给老师看"）。与 InjectContext 同
+// 通道同语义：TurnComplete=false 只入上下文、不触发回应，老师等学生开口
+// 问起照片再谈（teacherBaseInstruction 的 PHOTOS 段是另一半契约）。
+// 不要改走 SendRealtimeInput 的 Video 帧：那条路径为响应速度牺牲确定性
+// 排序，实测一次性照片会被延后或丢弃——紧跟的提问模型答的还是旧图。
+func (s *TeacherSession) SendImage(data []byte, mime string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sess.SendClientContent(genai.LiveClientContentInput{
+		Turns: []*genai.Content{{Role: genai.RoleUser, Parts: []*genai.Part{
+			genai.NewPartFromBytes(data, mime),
+		}}},
+		TurnComplete: genai.Ptr(false),
+	})
+}
+
 // --- 上下文便签 ---
 // 便签格式与 teacherBaseInstruction 的 CONTEXT NOTES 协议是一对契约：
 // 老师被要求对 [CONTEXT] 开头的消息静默记忆、绝不朗读。桥接层与 spike

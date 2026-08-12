@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ type fakeTeacher struct {
 	mu        sync.Mutex
 	audio     [][]byte
 	injected  []string
+	images    [][]byte
 	streamEnd int
 	rotate    bool
 	events    chan *llm.TeacherEvent
@@ -55,6 +57,21 @@ func (f *fakeTeacher) InjectContext(t string) error {
 	defer f.mu.Unlock()
 	f.injected = append(f.injected, t)
 	return nil
+}
+
+func (f *fakeTeacher) SendImage(data []byte, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	f.images = append(f.images, cp)
+	return nil
+}
+
+func (f *fakeTeacher) snapshotImages() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.images...)
 }
 
 func (f *fakeTeacher) Receive() (*llm.TeacherEvent, error) {
@@ -276,6 +293,61 @@ func TestTeacherContextInjectionAndSpeakingQueue(t *testing.T) {
 	})
 }
 
+// photo 帧：空闲时立即转发（解码后的 JPEG 字节）；模型说话中排队，轮次
+// 边界 flush；超限/坏数据回非致命 error 帧且不转发。
+func TestTeacherPhotoForwardQueueAndReject(t *testing.T) {
+	fake := newFakeTeacher()
+	d := &scriptedDialer{conns: []*fakeTeacher{fake}}
+	ws, cleanup := newTeacherTestClient(t, d)
+	defer cleanup()
+	readUntilJSON(t, ws, "ready")
+
+	photoMsg := func(raw []byte) []byte {
+		msg, _ := json.Marshal(map[string]string{
+			"type": "photo", "data": base64.StdEncoding.EncodeToString(raw),
+		})
+		return msg
+	}
+
+	// 空闲时：立即转发
+	p1 := []byte{0xff, 0xd8, 1, 2, 3}
+	ws.WriteMessage(websocket.TextMessage, photoMsg(p1))
+	waitFor(t, "照片到达上游", func() bool {
+		imgs := fake.snapshotImages()
+		return len(imgs) == 1 && string(imgs[0]) == string(p1)
+	})
+
+	// 说话中：排队，轮次结束 flush；只留最新一张
+	fake.events <- &llm.TeacherEvent{Audio: []byte{1}}
+	readUntilBinary(t, ws)
+	ws.WriteMessage(websocket.TextMessage, photoMsg([]byte{4, 4}))
+	p2 := []byte{5, 5, 5}
+	ws.WriteMessage(websocket.TextMessage, photoMsg(p2))
+	time.Sleep(150 * time.Millisecond) // 给错误路径一个暴露窗口
+	if imgs := fake.snapshotImages(); len(imgs) != 1 {
+		t.Fatalf("说话中不应转发照片, got %d 张", len(imgs))
+	}
+	fake.events <- &llm.TeacherEvent{TurnComplete: true}
+	readUntilJSON(t, ws, "turn_complete")
+	waitFor(t, "排队照片 flush", func() bool {
+		imgs := fake.snapshotImages()
+		return len(imgs) == 2 && string(imgs[1]) == string(p2)
+	})
+
+	// 超限：回非致命 error 帧，不转发
+	ws.WriteMessage(websocket.TextMessage, photoMsg(make([]byte, teacherMaxPhotoBytes+1)))
+	m := readUntilJSON(t, ws, "error")
+	if m["fatal"] == true {
+		t.Errorf("超限照片不应是致命错误: %v", m)
+	}
+	// 坏 base64：同样回 error 帧
+	ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"photo","data":"!!!"}`))
+	readUntilJSON(t, ws, "error")
+	if imgs := fake.snapshotImages(); len(imgs) != 2 {
+		t.Errorf("被拒照片不应转发, got %d 张", len(imgs))
+	}
+}
+
 func TestTeacherRotationReplaysContext(t *testing.T) {
 	fake1, fake2 := newFakeTeacher(), newFakeTeacher()
 	d := &scriptedDialer{conns: []*fakeTeacher{fake1, fake2}}
@@ -288,6 +360,14 @@ func TestTeacherRotationReplaysContext(t *testing.T) {
 	waitFor(t, "首会话收到便签", func() bool {
 		_, inj, _ := fake1.snapshot()
 		return len(inj) == 1
+	})
+	photo := []byte{0xff, 0xd8, 9}
+	msg, _ := json.Marshal(map[string]string{
+		"type": "photo", "data": base64.StdEncoding.EncodeToString(photo),
+	})
+	ws.WriteMessage(websocket.TextMessage, msg)
+	waitFor(t, "首会话收到照片", func() bool {
+		return len(fake1.snapshotImages()) == 1
 	})
 
 	// handle 更新 + 轮换点
@@ -305,6 +385,9 @@ func TestTeacherRotationReplaysContext(t *testing.T) {
 	_, inj, _ := fake2.snapshot()
 	if len(inj) != 2 || !strings.Contains(inj[0], "refreshed") || !strings.Contains(inj[1], `"g1"`) {
 		t.Errorf("新会话应先收衔接便签再重放组便签, got %v", inj)
+	}
+	if imgs := fake2.snapshotImages(); len(imgs) != 1 || string(imgs[0]) != string(photo) {
+		t.Errorf("新会话应重放最近照片, got %d 张", len(imgs))
 	}
 }
 

@@ -9,6 +9,7 @@
     stopTeacher,
     syncGroup,
     syncCard,
+    sendPhoto,
   } from '../lib/teacher.svelte.js';
   import { playerState } from '../lib/player.svelte.js';
 
@@ -60,6 +61,12 @@
     stopTeacher();
     open = false;
   }
+
+  function onPhoto(event) {
+    const file = event.target.files?.[0];
+    event.target.value = ''; // 同一张照片可再拍再发
+    if (file) sendPhoto(file);
+  }
 </script>
 
 {#if open && active}
@@ -82,10 +89,25 @@
     {:else}
       <p class="hint">
         跟老师打个招呼吧！可以说：<br />
-        “Teacher, 介绍一下这个单词” · “我们来听写吧” · 或随便聊聊
+        “Teacher, 介绍一下这个单词” · “我们来听写吧” · 或随便聊聊<br />
+        也可以拍张照片，问老师 “Look at this!”
       </p>
     {/if}
-    <button class="btn stop-btn" onclick={onStop}>结束对话</button>
+    <div class="btn-row">
+      <!-- label 套 input：点击直接调起相机（capture），无需 JS 转发手势 -->
+      <label class="btn photo-btn" class:disabled={teacherState.status === 'connecting'}>
+        📷 拍照给老师看
+        <input
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onchange={onPhoto}
+          disabled={teacherState.status === 'connecting'}
+          hidden
+        />
+      </label>
+      <button class="btn stop-btn" onclick={onStop}>结束对话</button>
+    </div>
   </div>
 {/if}
 
@@ -256,14 +278,32 @@
     color: #888;
     line-height: 1.7;
   }
-  .stop-btn {
+  .btn-row {
+    display: flex;
+    gap: 8px;
+  }
+  .btn-row .btn {
+    flex: 1;
     min-height: 44px;
     border: none;
     border-radius: 12px;
     background: #f3f3f5;
     font-size: 15px;
     font-weight: 700;
-    color: #d33;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .photo-btn {
+    color: #333;
+  }
+  .photo-btn.disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .stop-btn {
+    color: #d33;
   }
 </style>
