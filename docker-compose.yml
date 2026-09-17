@@ -4,6 +4,7 @@
 #   1. 在本文件同目录创建 .env（已 gitignore，别提交）：
 #        GEMINI_API_KEY=你的key
 #        HTTPS_PROXY=http://host.docker.internal:7890   # 代理跑在宿主机时这样写
+#        LIVE_MODEL=gemini-3.1-flash-live-preview                      # 可选：覆盖模型，见 README 环境变量表
 #   2. docker compose up -d --build
 #
 # 数据落在 ./data（与裸跑二进制同一布局），备份/迁移拷贝该目录即可。
@@ -23,6 +24,10 @@ services:
       # 容器里的 127.0.0.1 不是宿主机——代理跑在宿主机时要用
       # host.docker.internal（下方 extra_hosts 已把它映射到宿主机网关）。
       HTTPS_PROXY: ${HTTPS_PROXY:-}
+      # 可选：模型覆盖。留空 = 使用程序内置默认值（config 把空串当未设置）。
+      TEXT_MODEL: ${TEXT_MODEL:-}
+      LIVE_MODEL: ${LIVE_MODEL:-}
+      TEACHER_MODEL: ${TEACHER_MODEL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

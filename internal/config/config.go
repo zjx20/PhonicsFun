@@ -14,7 +14,7 @@ type Config struct {
 	TextModel string // TEXT_MODEL，默认 gemini-3.5-flash-lite
 	LiveModel string // LIVE_MODEL，默认 gemini-3.1-flash-live-preview
 	// TeacherModel 是 AI 老师对话会话用的 Live 模型。TEACHER_MODEL，
-	// 默认跟随 LiveModel——preview 模型改版时只需改 env，不写死代码。
+	// 默认跟随 LiveModel——模型改版时只需改 env，不写死代码。
 	TeacherModel string
 	Voice        string // VOICE，默认 Kore
 	RPM          int    // RPM，默认 12（免费层按 15 RPM 假设留余量）

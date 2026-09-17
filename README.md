@@ -33,7 +33,7 @@ GEMINI_API_KEY=xxx ./bin/phonicsfun
 | `PORT` | `8080` | 监听端口 |
 | `DATA_DIR` | `./data` | 数据目录（组 JSON、卡片 JSON、WAV 音频） |
 | `TEXT_MODEL` | `gemini-3.5-flash-lite` | 文本模型 |
-| `LIVE_MODEL` | `gemini-3.1-flash-live-preview` | Live 音频模型（preview 模型改版时改这里即可） |
+| `LIVE_MODEL` | `gemini-3.1-flash-live-preview` | Live 音频模型（模型改版时改这里即可，无需改代码） |
 | `TEACHER_MODEL` | 跟随 `LIVE_MODEL` | AI 老师对话模型 |
 | `VOICE` | `Kore` | Live 预置音色（拼读发音；也是 AI 老师音色的默认值，老师音色可在设置页单独选择） |
 | `RPM` | `12` | 出站请求限流（免费层按 15 RPM 留余量） |

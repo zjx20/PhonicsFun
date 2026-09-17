@@ -87,7 +87,7 @@ web/embed.go         //go:embed all:dist；dist/.gitkeep 保证未构建时也�
 ## 环境与已知坑
 
 - **本 devcontainer 里 8001 端口被 localhost-proxy 占用**，本地一律用 8080（后端默认、vite proxy、文档均已统一）。
-- `gemini-3.1-flash-live-preview` 是 preview 模型，改版/下线时改 `LIVE_MODEL` env 即可，不要写死新模型名到代码里。
+- 模型名一律走 env（`TEXT_MODEL`/`LIVE_MODEL`/`TEACHER_MODEL`，docker compose 经 `.env` 透传）：模型改版/下线时改 env 即可，代码里只有 `internal/config` 的默认值一处模型名，不要在别处写死。换 `LIVE_MODEL` 前必须用 spike 实测（单音节词、多音节词各跑几次）：音频流水线依赖模型"按指令在条目间停顿、条目内不停顿"，不同 Live 模型在这点上行为差异很大（例如有的模型把整词慢读拆成 c-a-t 逐音读，或在单个音内部多出停顿），静音分割会持续失败。
 - 前端产物必须零外链（无 CDN/webfont），`base:'./'` 相对路径；构建后 vite 插件会补回 `web/dist/.gitkeep`，别删这个机制。
 - 测试里不要依赖真实 API：pipeline 通过 `pipeline.LLM`/`AudioSession` 接口注入 fake（见 `pipeline_test.go`）；老师桥接通过 `httpapi.teacherConn`/`teacherDialer` 注入 fake（见 `teacher_test.go`）。
 - **AI 老师的麦克风需要 secure context**：`getUserMedia` 在 `http://192.168.x.x` 这类局域网明文地址下不存在（HTTPS 或 localhost 才有）。前端已检测并提示；部署侧的出路（反代 HTTPS/自签证书）写在 README。
