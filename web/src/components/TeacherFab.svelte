@@ -96,7 +96,7 @@
     <div class="btn-row">
       <!-- label 套 input：点击直接调起相机（capture），无需 JS 转发手势 -->
       <label class="btn photo-btn" class:disabled={teacherState.status === 'connecting'}>
-        📷 拍照给老师看
+        📷 拍照
         <input
           type="file"
           accept="image/*"
