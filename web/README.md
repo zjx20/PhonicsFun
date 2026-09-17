@@ -34,6 +34,10 @@ npm run build      # 产物输出到 web/dist
 - **手写 hash 路由**（无路由库，见 `src/App.svelte`）：
   `#/` 首页、`#/import` 导入向导、`#/group/{id}` 播放页、`#/settings` 设置页。
 - **运行时零外部资源**：无 CDN / webfont / 外部图片，图标用 emoji 或内联 SVG，字体走系统字体栈。
+- **应用图标**：源图是 `public/icon.svg`（浏览器 favicon 直接用它）；
+  `public/apple-touch-icon.png` 是它的满幅栅格版（iOS 桌面图标不认 SVG，
+  且系统会自己裁圆角，所以去掉圆角再转）。改了 SVG 后重新生成：
+  `sed 's/rx="40"/rx="0"/' public/icon.svg > /tmp/full.svg && npx --yes @resvg/resvg-js-cli /tmp/full.svg public/apple-touch-icon.png`。
 - **API**：全部基于 `api.js` 导出的 `BASE`（SPA 入口路径）解析，根部署时即 `/api/...`，
   子路径反代时自动带前缀（部署要求见根 README）。封装在 `src/lib/api.js`，错误统一抛 `Error(中文消息)`，
   由调用方弹 Toast（`src/lib/toast.svelte.js`）。

@@ -3,6 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- 相对路径：支持子路径反代部署（README 部署节）。iOS 桌面图标只认
+         PNG（apple-touch-icon 会忽略 SVG），PNG 由 icon.svg 生成 -->
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="PhonicsFun" />
+    <meta name="theme-color" content="#ff8a3d" />
     <title>PhonicsFun 自然拼读</title>
   </head>
   <body>
